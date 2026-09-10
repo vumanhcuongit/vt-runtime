@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-MODEL = "google/gemma-4-31b-it:free"  # pick any current free model (see openrouter.ai/models?variant=free)
+MODEL = "deepseek/deepseek-v4-pro-0813"  # recorded once; the demo replays the fixtures
 URL = "https://openrouter.ai/api/v1/chat/completions"
 OUTCOMES = ["include", "exclude", "needs_review"]
 

@@ -24,6 +24,12 @@ def _paths(state_dir):
 
 def cmd_run(args):
     cfg = load_config(args.config)
+    if args.source:
+        # override the fetch step's data source (used to demo a fixture whose
+        # items are missing the configured item_id_field)
+        for step in cfg["steps"]:
+            if step["name"] == "fetch":
+                step["source"] = args.source
     runtime_db, review_db = _paths(args.state_dir)
     store = Store(runtime_db)
     adapter = ReviewSystemAdapter(review_db, down=(args.external == "down"))
@@ -56,6 +62,8 @@ def build_parser():
     r.add_argument("--approval", choices=["auto", "required"], default=None)
     r.add_argument("--external", choices=["up", "down"], default="up")
     r.add_argument("--state-dir", default="state")
+    r.add_argument("--source", default=None,
+                   help="override the fetch step's data source")
     r.add_argument("--live", action="store_true")
     r.set_defaults(func=cmd_run)
 

@@ -14,6 +14,7 @@ import os
 
 from .keys import build_key
 from .adapter import RECONCILE_YES, RECONCILE_NO, RECONCILE_UNKNOWN
+from .inspect import format_row
 
 
 class RunStopped(Exception):
@@ -72,9 +73,20 @@ class Runner:
         step = self._step("fetch")
         with open(step["source"]) as f:
             items = json.load(f)
+        # The idempotency key needs a stable identifier from every item. If one
+        # is missing we STOP at fetch -- we do NOT fall back to the list index,
+        # which looks fine until the source reorders items and silently produces
+        # duplicate/mismatched keys in production.
+        for pos, item in enumerate(items):
+            if self.item_id_field not in item:
+                reason = (f"item at position {pos} is missing required field "
+                          f"'{self.item_id_field}'; stopped at fetch "
+                          f"(no list-index fallback)")
+                self.store.record_step(run_id, "fetch", None, "stopped", reason)
+                raise RunStopped(reason)
         if not self.store.get_step(run_id, "fetch", None):
             self.store.record_step(run_id, "fetch", None, "ok", f"{len(items)} items")
-            self.print(f"  fetch       -          ok          {len(items)} items")
+            self.print(format_row("fetch", None, "ok", f"{len(items)} items"))
         return items
 
     # ---- item-level: rights_check ----
@@ -90,16 +102,16 @@ class Runner:
         status = rights.get(item_id, "unknown")
         if status == "licensed":
             self.store.record_step(run_id, "rights_check", item_id, "ok", "licensed")
-            self.print(f"  rights      {item_id}   ok          licensed")
+            self.print(format_row("rights_check", item_id, "ok", "licensed"))
             return True
         if status == "unknown" and step.get("on_unknown") == "stop":
             reason = f"rights unknown for {item_id}: registry did not answer -> run stopped"
             self.store.record_step(run_id, "rights_check", item_id, "unknown", reason)
-            self.print(f"  rights      {item_id}   unknown     {reason}")
+            self.print(format_row("rights_check", item_id, "unknown", reason))
             raise RunStopped(reason)
         # not_licensed, or unknown with skip policy
         self.store.record_step(run_id, "rights_check", item_id, "skipped", status)
-        self.print(f"  rights      {item_id}   skipped     {status}")
+        self.print(format_row("rights_check", item_id, "skipped", status))
         return False
 
     # ---- item-level: judge (model) ----
@@ -112,7 +124,7 @@ class Runner:
             prompt = f.read()
         verdict, reason = self.model.judge(item_id, item, prompt, step["outcomes"])
         self.store.record_step(run_id, "judge", item_id, verdict, reason)
-        self.print(f"  judge       {item_id}   {verdict:<11} {reason!r}")
+        self.print(format_row("judge", item_id, verdict, reason))
         return verdict
 
     # ---- item-level: create_task (external) ----
@@ -131,13 +143,15 @@ class Runner:
         if action["approval_status"] != "approved":
             self.store.record_step(run_id, "create_task", item_id, "pending",
                                    "waiting for human approval")
-            self.print(f"  create_task {item_id}   pending     waiting for human approval")
+            self.print(format_row("create_task", item_id, "pending",
+                                   "waiting for human approval"))
             return
 
         if action["action_status"] == "committed":
             self.store.record_step(run_id, "create_task", item_id, "committed",
                                    f"{action['result']}  key {key}")
-            self.print(f"  create_task {item_id}   committed   {action['result']}  key {key}")
+            self.print(format_row("create_task", item_id, "committed",
+                                   f"{action['result']}  key {key}"))
             return
 
         if action["action_status"] == "intent":
@@ -153,7 +167,8 @@ class Runner:
         self.store.set_action_status(key, "committed", result)
         self.store.record_step(run_id, "create_task", item_id, "committed",
                                f"{result}  key {key}")
-        self.print(f"  create_task {item_id}   committed   {result}  key {key}")
+        self.print(format_row("create_task", item_id, "committed",
+                               f"{result}  key {key}"))
 
     def _reconcile(self, run_id, item_id, key):
         outcome, existing = self.adapter.reconcile(key)
@@ -161,18 +176,18 @@ class Runner:
             self.store.set_action_status(key, "committed", existing)
             detail = f"task {existing} already existed, not created again"
             self.store.record_step(run_id, "create_task", item_id, "reconciled", detail)
-            self.print(f"  create_task {item_id}   reconciled  {detail}")
+            self.print(format_row("create_task", item_id, "reconciled", detail))
             return
         if outcome == RECONCILE_NO:
             result = self.adapter.execute(self._step("create_task"), key)
             self.store.set_action_status(key, "committed", result)
             detail = f"not found on reconcile -> created on retry ({result})"
             self.store.record_step(run_id, "create_task", item_id, "reconciled", detail)
-            self.print(f"  create_task {item_id}   reconciled  {detail}")
+            self.print(format_row("create_task", item_id, "reconciled", detail))
             return
         # RECONCILE_UNKNOWN: external system down -> leave intent, stop, report
         detail = (f"external system cannot answer for key {key}; "
                   f"left as intent, run stopped for human review")
         self.store.record_step(run_id, "create_task", item_id, "intent", detail)
-        self.print(f"  create_task {item_id}   intent      {detail}")
+        self.print(format_row("create_task", item_id, "intent", detail))
         raise RunStopped(detail)

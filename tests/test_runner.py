@@ -61,6 +61,35 @@ class TestNormalRun(RunnerHarness):
         self.assertIn("unknown", (run["stopped_reason"] or ""))
 
 
+class TestMissingItemId(RunnerHarness):
+    def test_missing_item_id_field_stops_at_fetch(self):
+        bad = os.path.join(self.dir, "songs_missing_id.json")
+        _write(bad, [
+            {"song_id": "song_041", "title": "ok", "tempo_bpm": 72},
+            {"title": "no id here", "tempo_bpm": 90},
+        ])
+        # point the fetch step at the bad source
+        cfg = dict(self.cfg)
+        cfg["steps"] = [dict(s) for s in self.cfg["steps"]]
+        for s in cfg["steps"]:
+            if s["name"] == "fetch":
+                s["source"] = bad
+        store = Store(os.path.join(self.dir, "runtime.db"))
+        adapter = ReviewSystemAdapter(os.path.join(self.dir, "review.db"))
+        runner = Runner(cfg, store, adapter, ReplayModel(self.responses),
+                        printer=lambda *a, **k: None)
+        status = runner.run("run_bad")
+        self.assertEqual(status, "stopped")
+        run = store.get_run("run_bad")
+        self.assertIn("song_id", run["stopped_reason"])
+        self.assertIn("position 1", run["stopped_reason"])
+        # no item-level work happened, no task created
+        self.assertEqual(len(store.list_actions()), 0)
+        # never recorded a rights/judge step (did not run on despite missing id)
+        steps = [s["step_name"] for s in store.list_steps("run_bad")]
+        self.assertNotIn("rights_check", steps)
+
+
 class TestApproval(RunnerHarness):
     def test_required_approval_waits(self):
         runner, store, adapter = self._runner(approval_override="required")

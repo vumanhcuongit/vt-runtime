@@ -8,13 +8,16 @@ from vt_runtime.adapter import ReviewSystemAdapter
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MOZA = "configs/moza_song_screening.json"
+# single-include-song source: the crash story is about ONE task existing exactly
+# once, so we scope the run to one song and assert "1 task, never 2".
+CRASH_SRC = "fixtures/songs_crash.json"
 
 
 def run_cli(state_dir, *extra):
     env = dict(os.environ, PYTHONPATH=os.path.join(REPO, "src"))
     return subprocess.run(
         [sys.executable, "-m", "vt_runtime", "run", "--config", MOZA,
-         "--state-dir", state_dir, *extra],
+         "--source", CRASH_SRC, "--state-dir", state_dir, *extra],
         cwd=REPO, env=env, capture_output=True, text=True,
     )
 

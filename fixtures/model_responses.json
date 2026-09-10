@@ -1,0 +1,42 @@
+{
+  "song_041": {
+    "verdict": "include",
+    "reason": "Slow steady tempo likely simple melody, suitable for beginners."
+  },
+  "song_042": {
+    "verdict": "exclude",
+    "reason": "Tempo too fast for beginners at 172 BPM."
+  },
+  "song_044": {
+    "verdict": "include",
+    "reason": "Slow tempo and scale-based title suit beginner practice."
+  },
+  "song_045": {
+    "verdict": "include",
+    "reason": "Moderate tempo and simple round structure suit beginner practice."
+  },
+  "song_046": {
+    "verdict": "exclude",
+    "reason": "Fast tempo and riff-focused likely too complex for beginners."
+  },
+  "song_047": {
+    "verdict": "include",
+    "reason": "Slow waltz tempo and beginner-oriented title suggest accessible material."
+  },
+  "song_048": {
+    "verdict": "exclude",
+    "reason": "Odd meter is too complex for beginner learners."
+  },
+  "song_049": {
+    "verdict": "include",
+    "reason": "Slow tempo and simple title suggest accessible beginner material."
+  },
+  "song_043": {
+    "verdict": "exclude",
+    "reason": "Unknown unregistered demo lacks verified content and pedagogical structure."
+  },
+  "song_050": {
+    "verdict": "needs_review",
+    "reason": "Fugue implies polyphonic complexity despite 'simple'; unclear without audio."
+  }
+}
