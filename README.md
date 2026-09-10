@@ -23,7 +23,11 @@ make demo
 ```
 
 That's it — the demo replays recorded model responses, so nothing to install and
-no key to set.
+no key to set. **SQLite needs no install either**: it ships compiled inside
+CPython (the `sqlite3` stdlib module), so there is no database server or package
+to add. Every `make` target first runs a `preflight` check (`make preflight`) that
+verifies `python3` and its bundled `sqlite3` are present and fails with a clear
+message if not — handy on a demo machine you don't control.
 
 ## 3. The commands
 
