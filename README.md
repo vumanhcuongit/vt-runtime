@@ -32,9 +32,13 @@ no key to set.
 | `make demo` | A normal run start to finish: one task per `include`; stops cleanly at the song with unknown rights. |
 | `make demo-crash-a` | Crash **after** writing `intent`, **before** the external call — then retry. Task is created exactly once ("created on retry"). |
 | `make demo-crash-b` | Crash **after** the external call, **before** recording completion — then retry. The task is **not** created again ("already existed"). |
+
+> The crash demos run against a **single-include-song** source (`fixtures/songs_crash.json`) so the message stays crisp: *one* task should exist, and after a crash + retry, exactly one does — never two. The full workflow (all 10 songs) runs under `make demo`.
+
 | `make demo-crash-b-down` | Crash B, then retry with the external system **down**. Record stays `intent`, the run stops, and a report is printed for a human. |
 | `make demo-approval` | `--approval=required`: the external action waits for a person instead of running. One flag, no code change. |
 | `make demo-two-runs` | Two **different** runs over the same songs create **two** tasks — correct, not a bug. |
+| `make demo-missing-id` | An item missing its `song_id`: the run **stops at fetch** with a readable reason — never falls back to list position. |
 | `make inspect` | Every run, every step, every external action. |
 | `make reset` | Delete local state for a clean slate. |
 | `make test` | Run the full unittest suite (no key, no network for the crash/logic tests). |
@@ -117,6 +121,13 @@ mechanism does nothing. Two situations, two correct answers:
 `make demo-crash-a`/`-b` print the key so you can confirm it's identical across a
 retry; `make demo-two-runs` shows the two-runs-two-tasks case.
 
+**No identifier, no run.** `item_id` comes from the field named in config
+(`item_id_field`). If an item is missing that field, the run **stops at fetch**
+with a readable reason — it does **not** fall back to the item's list position. A
+list index looks fine until the source returns items in a different order, at
+which point the key silently changes and duplicate protection is gone. See
+`make demo-missing-id`.
+
 ## 6. Where an LLM is not used, and why
 
 The Moza config has two steps that both *look* like questions a model could
@@ -176,17 +187,27 @@ methods:
 Swapping the target (review system → ATS → chat) is a new adapter plus config,
 not a runner change. **That interface is the platform boundary.**
 
-**Model fixtures** were recorded from a real free model via OpenRouter using only
-`tools/record_fixtures.py` (stdlib `urllib`, no SDK). Re-record with:
+**Model fixtures are recorded from a real model** (`deepseek/deepseek-v4-pro-0813`
+via OpenRouter) using only `tools/record_fixtures.py` (stdlib `urllib`, no SDK).
+The model judges each song from its metadata — `{song_id, title, artist,
+tempo_bpm}` — substituted into `prompts/teaching_suitability.txt`, and returns
+`{verdict, reason}`. Re-record with:
 
 ```bash
 OPENROUTER_API_KEY=... python3 tools/record_fixtures.py
 ```
 
-The recorder skips already-recorded songs and saves after each success, so it can
-accumulate across the free tier's rate limits. The **demo never needs a key** —
-it replays the recorded file. A `LiveModel` stub exists as the concrete home for
-a real, un-replayed call; wiring it is out of scope for this prototype.
+The recorder skips already-recorded songs and saves after each success, so a run
+is resumable. The **demo never needs a key** — it replays the recorded file. A
+`LiveModel` stub exists as the concrete home for a real, un-replayed call; wiring
+it is out of scope for this prototype.
+
+Recording from a real model (rather than hand-writing) gives the fixtures the
+realistic imperfection the exercise asks for: e.g. `song_050` ("Simple Fugue
+Sketch") comes back `needs_review` with the hedged reasoning *"Fugue implies
+polyphonic complexity despite 'simple'; unclear without audio"* — a genuine
+borderline case a person would be unlikely to invent. That verdict flows through
+the `needs_review` → **flag, no external action** branch in `make demo`.
 
 ## 9. Known limitations
 
@@ -204,13 +225,17 @@ a real, un-replayed call; wiring it is out of scope for this prototype.
 - **State lives in local SQLite files** under `state/`.
 - **The Helios config has not been executed** (see §7).
 
-## 10. Deviations from the spec's examples (deliberate, and why)
+## 10. Choices worth calling out
 
-- **Config is JSON, not YAML.** The spec shows YAML; JSON keeps the runtime at
+- **Config is JSON, not YAML.** The spec's §0 explicitly sanctions this ("if that
+  becomes awkward, use JSON for config instead"). JSON keeps the runtime at
   **zero dependencies** so the clean-clone / no-key gate has nothing to install.
+  The `.json` config files carry the same shape as the spec's `.yaml` examples.
 - **`fetch` orders the unknown-rights song last.** One fixture set then
   demonstrates both "exactly one task per `include`" and "unknown rights stops the
   run" in a single `make demo`.
+- **Crash demos use a single-include-song source.** So the crux — "one task,
+  never two" — reads cleanly; the full workflow runs under `make demo`.
 
 ## Project layout
 
