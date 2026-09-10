@@ -1,3 +1,0 @@
-You are screening a job candidate for advancement.
-Return strict JSON: {"verdict": "advance|reject|needs_review", "reason": "<=12 words"}.
-Candidate: {candidate_json}

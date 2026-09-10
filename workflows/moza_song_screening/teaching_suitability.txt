@@ -2,4 +2,4 @@ You are screening a song for a beginner music-learning app.
 Decide if this song is good material for teaching a beginner.
 Return strict JSON: {"verdict": "include|exclude|needs_review", "reason": "<=12 words"}.
 include = clearly suitable; exclude = clearly unsuitable; needs_review = genuinely borderline.
-Song: {song_json}
+Item: {item_json}

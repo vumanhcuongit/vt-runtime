@@ -1,58 +1,102 @@
 # VT Runtime
 
-A reusable **workflow runner** with durable state that recovers from a crash
-without repeating an external action.
+One reusable platform capability: a **config-driven workflow runner** with
+durable state that recovers from a crash without repeating an external action —
+and that runs **more than one Virtual Talent through configuration, not code.**
 
 ## 1. What this is
 
-Musea's Virtual Talents (VTs) each re-solved the same infrastructure problems:
-how to run steps in order, record what happened, and — the dangerous one — how
-to avoid performing an external action twice after a crash. This is **one shared
-piece of machinery** that any VT can use: a config-driven runner with durable
-SQLite state and crash-safe external actions. It is **not** Moza, not Helios,
-not a platform — just the runner underneath them. Moza's song screening is the
-demonstration workflow, not the thing being built.
+Musea's Virtual Talents (VTs) each re-solved the same infrastructure: run steps
+in order, record what happened, gate risky actions, and — the dangerous one —
+avoid performing an external action twice after a crash. This is the shared
+machinery underneath them: **reliable workflow execution with safe external
+actions.** It is deliberately **not** Moza, not Helios, not "the platform" —
+just the runner. Two VTs (Moza song-screening and Helios recruiting-screening)
+run on it from config alone, to show the capability generalizes.
 
 ## 2. Setup
 
-Requires **Python 3.12+**. **No dependencies. No API key.**
+Requires **Python 3.12+**. **No dependencies. No API key. No database to install.**
 
 ```bash
 git clone <this-repo> vt-runtime && cd vt-runtime
 make demo
 ```
 
-That's it — the demo replays recorded model responses, so nothing to install and
-no key to set. **SQLite needs no install either**: it ships compiled inside
-CPython (the `sqlite3` stdlib module), so there is no database server or package
-to add. Every `make` target first runs a `preflight` check (`make preflight`) that
-verifies `python3` and its bundled `sqlite3` are present and fails with a clear
-message if not — handy on a demo machine you don't control.
+SQLite ships compiled inside CPython (the `sqlite3` stdlib module), so there is
+no database server or package to add. Every `make` target first runs a
+`preflight` check that verifies `python3` and its bundled `sqlite3` and fails
+with a clear message if not — cheap insurance on a demo machine you don't
+control. The demo replays recorded model responses, so no key is ever needed.
 
-## 3. The commands
+## 3. Structure, and why it's the first piece of evidence
+
+Part 4 asks for **one reusable capability** and, in the same breath, *don't
+rebuild the VTs*. That's a burden of proof: the layout should let a reader
+**see** the boundary before reading any code.
+
+```
+vt-runtime/
+├── cli.py                      thin entry point (the Makefile calls this)
+├── core/                       ← the reusable capability; ZERO domain words
+│   ├── runner.py               execution: dispatch steps by TYPE, not by name
+│   ├── state.py                durable SQLite: runs/steps + external_actions ledger
+│   ├── actions.py              safe external actions: 3-state lifecycle + key + approval + reconcile
+│   └── observability.py        the state dump every command prints
+├── adapters/                   ← the outside world, behind interfaces
+│   ├── model.py                ModelProvider | ReplayModel | LiveModel
+│   └── external.py             ExternalAdapter | ReviewSystemAdapter | AtsAdapter
+├── workflows/                  ← what each VT wants done (data, not code)
+│   ├── moza_song_screening/    config.json · teaching_suitability.txt · fixtures/
+│   └── helios_recruiting_screening/  config.json · candidate_screen.txt · fixtures/
+├── tools/record_fixtures.py    one-time, config-driven model-fixture recorder
+├── tests/                      test_crash_recovery · test_idempotency · test_runner · test_adapters
+└── examples/failure-recovery.md
+```
+
+**The dependency direction *is* the argument:**
+
+```
+  workflows/  ──depends on──►  core/  ──depends on──►  adapters/
+```
+
+Never the reverse. `core/` imports nothing from `workflows/`; `adapters/`
+imports nothing from `core/`. The mechanical proof: `grep -rniE
+"song|candidate|tempo|licen" core/` returns **nothing**. If a domain word ever
+appears in `core/`, the boundary has leaked in the direction that turns a
+platform back into one VT's code.
+
+**Each workflow is a folder** (config + prompt + fixtures together), not files
+scattered into shared `prompts/` and `fixtures/` dirs. This passes the deletion
+test (removing a VT is removing one directory, no orphans) and the addition test
+(see §8).
+
+**Why `core/` and not `platform/`:** a top-level `platform/` directory shadows
+Python's standard-library `platform` module on `sys.path`, which can break on
+another machine — exactly the failure mode this project avoids. `core/` carries
+the same "reusable capability" meaning without the collision.
+
+## 4. The commands
 
 | Command | What it shows |
 |---|---|
-| `make demo` | A normal run start to finish: one task per `include`; stops cleanly at the song with unknown rights. |
-| `make demo-crash-a` | Crash **after** writing `intent`, **before** the external call — then retry. Task is created exactly once ("created on retry"). |
-| `make demo-crash-b` | Crash **after** the external call, **before** recording completion — then retry. The task is **not** created again ("already existed"). |
+| `make demo` | Moza, start to finish: one task per `include`; `exclude`/`needs_review` create nothing; not-licensed skipped; stops cleanly at unknown rights. |
+| `make demo-crash-a` | Crash **after** `intent`, **before** the call — then retry. Task created exactly once ("created on retry"). |
+| `make demo-crash-b` | Crash **after** the call, **before** commit — then retry. Task **not** created again ("already existed"). |
+| `make demo-crash-b-down` | Crash B, then retry with the external system **down**: record stays `intent`, run stops, prints a report for a human. |
+| `make demo-approval` | `--approval=required`: the external action waits for a person. One flag, no code change. |
+| `make demo-two-runs` | Two **different** runs, same songs → **two** tasks. Correct, not a bug. |
+| `make demo-missing-id` | An item missing its `song_id` → the run **stops at fetch**; never falls back to list position. |
+| `make demo-helios` | The **same runner** executes a different VT — different steps, identifier, target, approval — from config alone. |
+| `make inspect` / `make reset` / `make test` | Dump all state / clear state / run the suite. |
 
-> The crash demos run against a **single-include-song** source (`fixtures/songs_crash.json`) so the message stays crisp: *one* task should exist, and after a crash + retry, exactly one does — never two. The full workflow (all 10 songs) runs under `make demo`.
+> The crash demos run against a single-include-song source so the crux — "one
+> task, never two" — reads cleanly. `examples/failure-recovery.md` is a
+> step-by-step walkthrough of the crash-B run.
 
-| `make demo-crash-b-down` | Crash B, then retry with the external system **down**. Record stays `intent`, the run stops, and a report is printed for a human. |
-| `make demo-approval` | `--approval=required`: the external action waits for a person instead of running. One flag, no code change. |
-| `make demo-two-runs` | Two **different** runs over the same songs create **two** tasks — correct, not a bug. |
-| `make demo-missing-id` | An item missing its `song_id`: the run **stops at fetch** with a readable reason — never falls back to list position. |
-| `make inspect` | Every run, every step, every external action. |
-| `make reset` | Delete local state for a clean slate. |
-| `make test` | Run the full unittest suite (no key, no network for the crash/logic tests). |
+## 5. The three states and reconcile
 
-Each crash command performs the crash **and** the retry in one command — nothing
-for a reviewer to run by hand mid-demo.
-
-## 4. The three states and reconcile
-
-Every external action has exactly one record, in one of three states:
+Every external action has one record, in one of three states:
 
 | State | Meaning | What a retry does |
 |---|---|---|
@@ -60,202 +104,148 @@ Every external action has exactly one record, in one of three states:
 | `intent` | Attempted, outcome unknown | **Reconcile** — ask the external system |
 | `committed` | Confirmed done | Skip, return the stored result |
 
-A crash can land between "task created" and "we recorded that it was created".
-From the record alone, "crashed before the call" and "crashed after the call"
-both leave a row saying `intent`. So **`intent` means neither "done" nor "not
-done" — it means: go and find out.**
+A crash can land between "task created" and "we recorded it". Both crash-before
+and crash-after leave a row saying `intent` — so **`intent` means neither "done"
+nor "not done"; it means go and find out.**
 
 ```
   record says "intent"
         │
         ▼
-  ask external system: "does a task with key K exist?"
-        │
+  ask external system: "does an action with key K exist?"
         ├── yes ────────► mark committed, do NOT create again
         ├── no ─────────► create it now, then mark committed
         └── cannot answer ► leave as intent, STOP, print a report for a human
 ```
 
-That third branch is why `--external=down` doesn't corrupt anything: if we can't
-get a straight answer, we don't guess and we don't retry blindly — we stop and
-tell someone, with the key they need to check by hand.
-
-**Approval is a separate axis, not a fourth state.** An action awaiting a person
-has definitely not happened, so it can't be `intent` (which means it *might*
-have). Two independent fields:
+**Approval is a separate axis, not a fourth state** (`core/actions.py`):
 
 ```
   approval_status:  pending → approved
   action_status:    none → intent → committed
 ```
 
-With `approval: auto` approval is granted immediately; with `approval: required`
-the action sits at `pending`/`none` and nothing is attempted until a person
-approves. This is why the announced change request — *an autonomous action now
-needs approval* — is a one-line config change, not new code: the gate already
-exists and the action state machine is untouched.
+An action awaiting a person definitely hasn't happened, so it can never be
+`intent`. This is why the announced change request — *an autonomous action now
+needs approval* — is a one-line config change (`approval: auto → required`), not
+new code.
 
-## 5. The idempotency key
+## 6. The idempotency key
 
-The key is **derived, never generated**:
+Derived, never generated:
 
 ```
   key = vt : workflow : run_id : item_id
   moza:song_screening:run_2026_03_14:song_042
 ```
 
-- `vt` + `workflow` — two workflows can't collide.
-- `run_id` — identifies the **run**, not the attempt.
-- `item_id` — the thing being acted on (`song_id` here; `candidate_id` for Helios — it comes from config).
-
-**The run_id rule (the part that's easy to get wrong):** a run_id is created once
-when a run starts and reused by every retry of that run. Only a genuinely new run
-(started by a person or schedule) gets a new id.
-
-**What breaks if you generate a fresh id per attempt:** the key changes on retry,
-the existing `intent`/`committed` record is never found, and a duplicate task is
-created — even though the reconcile logic is perfectly correct. The whole
-mechanism does nothing. Two situations, two correct answers:
+`run_id` identifies the **run**, not the attempt, and every retry of a run
+reuses it — so the key is identical across retries and the existing record is
+found. Generate a fresh id per attempt instead and the key changes on retry, the
+record isn't found, and a duplicate is created — the whole mechanism does
+nothing.
 
 | Situation | Same key? | Correct outcome |
 |---|---|---|
-| Same run + same song, run twice (a retry) | Yes | **One** task |
+| Same run + song, run twice (a retry) | Yes | **One** task |
 | Two different runs, same song | No | **Two** tasks (legitimate) |
 
-`make demo-crash-a`/`-b` print the key so you can confirm it's identical across a
-retry; `make demo-two-runs` shows the two-runs-two-tasks case.
+**No identifier, no run.** `item_id` comes from the config field
+`item_id_field`. If an item lacks it, the run **stops at fetch** — it never falls
+back to list position, which looks fine until the source reorders and silently
+breaks duplicate protection (`make demo-missing-id`).
 
-**No identifier, no run.** `item_id` comes from the field named in config
-(`item_id_field`). If an item is missing that field, the run **stops at fetch**
-with a readable reason — it does **not** fall back to the item's list position. A
-list index looks fine until the source returns items in a different order, at
-which point the key silently changes and duplicate protection is gone. See
-`make demo-missing-id`.
+## 7. Where an LLM is used, and where it isn't
 
-## 6. Where an LLM is not used, and why
+Two Moza steps both *look* like model questions:
 
-The Moza config has two steps that both *look* like questions a model could
-answer:
+- **`rights_check` is a deterministic lookup**, on purpose. A made-up licence is
+  a legal problem, not a quality one; when the registry can't answer, the run
+  **stops** rather than letting a model invent a lookup result.
+- **`judge` is a real model decision.** "Good for teaching a beginner?" has no
+  lookup table, and its verdict changes what happens next (`include` → task;
+  `exclude`/`needs_review` → nothing).
 
-- **`rights_check` is a deterministic lookup**, on purpose. A made-up licence is a
-  legal problem, not a quality one. When the registry can't answer, the run
-  **stops** rather than letting a model guess something that looks like a lookup
-  result.
-- **`judge` is a real model decision.** "Is this song good for teaching a
-  beginner?" has no lookup table, and its answer changes what happens next
-  (`include` creates a task; `exclude`/`needs_review` do not).
+**The condition that flips it:** where rights arrive as documents rather than a
+registry, extraction becomes a **model step behind a human gate**. What never
+changes: a model must not fabricate something that looks like a lookup result.
 
-**The condition that would flip the rights check:** this is a rule, not an
-absolute. The prototype treats rights as authoritative structured data *because a
-registry exists*. Where one doesn't — and in some markets it won't — rights
-arrive as documents and contracts, and extraction becomes a **model step followed
-by human review** for anything uncertain. What never changes: a model must not
-fabricate something that looks like a lookup result.
+## 8. Adding a workflow — does this structure make it easy?
 
-## 7. The second config (Helios) — present, not executed
+Yes, and the repo proves it rather than claiming it. **Helios runs on the same
+runner** (`make demo-helios`): a different step **order** (judge → route →
+create_note), a different identifier (`candidate_id`), a different external
+target (an ATS, producing `N-` notes), and a different approval default. No
+`core/` or `adapters/` code changed to make Moza *or* Helios run — the runner
+dispatches by step **type** (`deterministic` / `model` / `external`), and the
+deterministic type covers both a **lookup** gate (Moza rights) and a **map**
+annotation (Helios routing).
 
-`configs/helios_recruiting_screening.json` is included to show the runner is
-reusable through configuration, not hard-coded to songs. Note the differences
-from Moza:
+So "add a new VT" breaks into three honest cases:
 
-- Different identifier (`candidate_id` vs `song_id`).
-- Different step **order** — Helios judges *before* routing; Moza checks rights
-  *before* judging.
-- Different external system (`ats` vs `review_system`) and different approval
-  default (`required` vs `auto`).
+| The new workflow needs… | Cost |
+|---|---|
+| Only existing primitives (fetch + lookup/map + model + an existing target) | **Add one `workflows/<vt>/` folder. Zero platform code.** |
+| A brand-new external target (e.g. a chat tool) | One adapter class in `adapters/external.py` + one line in the CLI registry. |
+| A genuinely new step behaviour | A small handler in `core/runner.py`, shared by every later workflow. |
 
-**It has not been run.** The first thing I'd expect to break if it were: the
-external step targets `ats`, but only a `review_system` adapter is wired, and the
-`route` step is a `deterministic` type the runner doesn't yet have a handler for.
-Making Helios run is a config-plus-adapter delta (add an `ATS` adapter behind the
-same `execute`/`reconcile` interface, and a `route` handler) — **not** a change to
-the runner's core state machine, which is the point.
+That escalation is the platform value: the common case is configuration; the
+rare case is a small, *shared* addition — never a rebuild.
 
-## 8. What is mocked, and what that hides
+Record a new workflow's model fixtures once with the same config-driven tool:
+
+```bash
+OPENROUTER_API_KEY=... python3 tools/record_fixtures.py \
+    --config workflows/<vt>/config.json
+```
+
+## 9. What is mocked, and what that hides
 
 | Real thing | Mock |
 |---|---|
-| Song source | `fixtures/songs.json` (10 songs) |
-| Rights registry | `fixtures/rights.json` (lookup with one deliberate `unknown`) |
-| The model | `fixtures/model_responses.json`, recorded from real calls (see below) |
-| Review system | Local SQLite (`state/review_system.db`) with `create_task` / `find_task_by_key` |
+| Song / candidate source | per-workflow `fixtures/*.json` |
+| Rights registry | `fixtures/rights.json` (a lookup with one deliberate `unknown`) |
+| The model | `fixtures/model_responses.json`, recorded from a real model |
+| Review system / ATS | local SQLite (`state/review_system.db`, `state/ats.db`) behind the adapter |
 
-The runner talks to an **adapter**, never a named system. One interface, two
-methods:
+Model fixtures are recorded from a real model (`deepseek/deepseek-v4-pro-0813`
+via OpenRouter, stdlib `urllib`, no SDK). The model judges each item's metadata
+substituted into the prompt's `{item_json}` placeholder. Recording from a real
+model (not hand-writing) gives realistic imperfection: e.g. Moza's `song_050`
+("Simple Fugue Sketch") returns `needs_review` — *"Fugue implies polyphonic
+complexity despite 'simple'; unclear without audio"* — a genuine borderline case
+a person wouldn't invent. `LiveModel` is a stub marking where a real, un-replayed
+call would plug in.
 
-```
-  execute(action, idempotency_key)   → perform the action
-  reconcile(idempotency_key)         → "did this already happen?"  yes / no / cannot_answer
-```
+The adapter boundary (`execute` / `reconcile`) is where a real system replaces
+the mock — swapping the target is a new adapter plus config, never a runner
+change.
 
-Swapping the target (review system → ATS → chat) is a new adapter plus config,
-not a runner change. **That interface is the platform boundary.**
+## 10. Known limitations
 
-**Model fixtures are recorded from a real model** (`deepseek/deepseek-v4-pro-0813`
-via OpenRouter) using only `tools/record_fixtures.py` (stdlib `urllib`, no SDK).
-The model judges each song from its metadata — `{song_id, title, artist,
-tempo_bpm}` — substituted into `prompts/teaching_suitability.txt`, and returns
-`{verdict, reason}`. Re-record with:
-
-```bash
-OPENROUTER_API_KEY=... python3 tools/record_fixtures.py
-```
-
-The recorder skips already-recorded songs and saves after each success, so a run
-is resumable. The **demo never needs a key** — it replays the recorded file. A
-`LiveModel` stub exists as the concrete home for a real, un-replayed call; wiring
-it is out of scope for this prototype.
-
-Recording from a real model (rather than hand-writing) gives the fixtures the
-realistic imperfection the exercise asks for: e.g. `song_050` ("Simple Fugue
-Sketch") comes back `needs_review` with the hedged reasoning *"Fugue implies
-polyphonic complexity despite 'simple'; unclear without audio"* — a genuine
-borderline case a person would be unlikely to invent. That verdict flows through
-the `needs_review` → **flag, no external action** branch in `make demo`.
-
-## 9. Known limitations
-
-- **Single process.** This demonstrates safe *sequential* recovery. It does not
-  solve concurrent workers: two processes could each `reconcile`, both get "no",
-  and both create. Fixing that needs a lock or native idempotency at the target —
-  out of scope for a small prototype.
-- **Reconcile depends on lookup-by-key.** It only works if the external system
-  can answer "did action K happen?". In production, prefer a target that accepts
-  an idempotency key **natively** so the *system* deduplicates; lookup-and-
-  reconcile is the fallback for systems that can't.
+- **Single process.** This demonstrates safe *sequential* recovery. Two
+  concurrent workers could each `reconcile`, both get "no", and both create.
+  Fixing that needs a lock or native idempotency at the target — out of scope.
+- **Reconcile depends on lookup-by-key.** It only works if the target can answer
+  "did action K happen?". Production should prefer a target that accepts an
+  idempotency key **natively** so the *system* dedupes; lookup-and-reconcile is
+  the fallback.
 - **`idempotent: true` is a declaration the runner trusts.** A real platform
-  should *refuse* an external action that doesn't carry an idempotency contract,
-  rather than taking the config's word for it.
-- **State lives in local SQLite files** under `state/`.
-- **The Helios config has not been executed** (see §7).
+  should *refuse* an external action lacking an idempotency contract.
+- **State is local SQLite** under `state/`.
+- **The external mock hides real semantics.** A local mock proves the recovery
+  logic, not that a specific task tracker or ATS behaves this way.
 
-## 10. Choices worth calling out
+## 11. Deliberate choices worth calling out
 
-- **Config is JSON, not YAML.** The spec's §0 explicitly sanctions this ("if that
-  becomes awkward, use JSON for config instead"). JSON keeps the runtime at
+- **JSON config, not YAML** — sanctioned by the build brief; keeps the runtime at
   **zero dependencies** so the clean-clone / no-key gate has nothing to install.
-  The `.json` config files carry the same shape as the spec's `.yaml` examples.
-- **`fetch` orders the unknown-rights song last.** One fixture set then
-  demonstrates both "exactly one task per `include`" and "unknown rights stops the
-  run" in a single `make demo`.
-- **Crash demos use a single-include-song source.** So the crux — "one task,
-  never two" — reads cleanly; the full workflow runs under `make demo`.
-
-## Project layout
-
-```
-configs/    workflow definitions (moza runs; helios is shape-only)
-fixtures/   canned data standing in for real systems
-prompts/    model prompts
-src/vt_runtime/
-  keys.py      derived idempotency key
-  state.py     durable SQLite state (runs/steps + external_actions ledger)
-  adapter.py   execute/reconcile boundary (review-system mock)
-  model.py     replay/live model providers
-  config.py    JSON config loader
-  runner.py    the reusable runner (state machine, resume, reconcile)
-  inspect.py   human-readable state dump
-  cli.py       command-line entry point
-tools/record_fixtures.py   one-time model-fixture recorder (stdlib only)
-tests/      unittest suite (logic + cross-process crash recovery)
-```
+- **`core/` instead of `platform/`** — avoids shadowing the stdlib `platform`
+  module (see §3).
+- **`fetch` orders the unknown-rights song last** — one Moza fixture set then
+  shows both "one task per include" and "unknown stops the run" in one demo.
+- **Crash demos use a single-include-song source** — so "one task, never two"
+  reads cleanly; the full workflow runs under `make demo`.
+- **No `web/`, `scheduler/`, `event_bus/`, layered `domain/…/infrastructure/`.**
+  Each would need a justification that doesn't exist yet at this size; the brief
+  rewards restraint. Absence here is a decision, not an omission.

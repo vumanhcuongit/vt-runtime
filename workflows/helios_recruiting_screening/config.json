@@ -1,0 +1,11 @@
+{
+  "vt": "helios",
+  "workflow": "recruiting_screening",
+  "item_id_field": "candidate_id",
+  "steps": [
+    {"name": "fetch", "type": "deterministic", "scope": "run", "source": "fixtures/candidates.json"},
+    {"name": "judge", "type": "model", "prompt": "candidate_screen.txt", "responses": "fixtures/model_responses.json", "outcomes": ["advance", "reject", "needs_review"], "proceed_when": ["advance"]},
+    {"name": "route", "type": "deterministic", "rules": "fixtures/routing.json", "field": "role"},
+    {"name": "create_note", "type": "external", "target": "ats", "operation": "create_note", "approval": "required", "idempotent": true}
+  ]
+}

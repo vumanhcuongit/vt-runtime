@@ -1,0 +1,14 @@
+{
+  "cand_01": {
+    "verdict": "advance",
+    "reason": "Senior backend engineer with seven years experience and strong references."
+  },
+  "cand_02": {
+    "verdict": "reject",
+    "reason": "No portfolio and unrelated background for designer role."
+  },
+  "cand_03": {
+    "verdict": "needs_review",
+    "reason": "Promising but lacks required domain expertise; borderline for engineering role."
+  }
+}

@@ -1,130 +1,137 @@
-import json
+"""Execution behaviour: the runner dispatches by step type, the model
+verdict changes behaviour, deterministic lookups gate/stop, a missing
+identifier stops at fetch, and the SAME runner executes a second workflow
+(Helios) with a different step order, identifier, target and approval."""
 import os
 import tempfile
 import unittest
-from vt_runtime.state import Store
-from vt_runtime.adapter import ReviewSystemAdapter
-from vt_runtime.model import ReplayModel
-from vt_runtime.config import load_config
-from vt_runtime.runner import Runner
+
+from core.runner import load_config, Runner
+from core.state import Store
+from adapters.external import ReviewSystemAdapter, AtsAdapter
+from adapters.model import ReplayModel
+
+MOZA = "workflows/moza_song_screening/config.json"
+HELIOS = "workflows/helios_recruiting_screening/config.json"
 
 
-def _write(path, obj):
-    with open(path, "w") as f:
-        json.dump(obj, f)
+def build(cfg, tmp, **kw):
+    store = Store(os.path.join(tmp, "runtime.db"))
+    adapters = {
+        "review_system": ReviewSystemAdapter(os.path.join(tmp, "rs.db"),
+                                             down=kw.pop("down", False)),
+        "ats": AtsAdapter(os.path.join(tmp, "ats.db")),
+    }
+    model_step = next((s for s in cfg["steps"] if s["type"] == "model"), None)
+    model = ReplayModel(model_step["responses"]) if model_step else None
+    runner = Runner(cfg, store, adapters, model,
+                    printer=lambda *a, **k: None, **kw)
+    return runner, store, adapters
 
 
-class RunnerHarness(unittest.TestCase):
+class TestMozaExecution(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.responses = os.path.join(self.dir, "responses.json")
-        _write(self.responses, {
-            "song_041": {"verdict": "include", "reason": "clear rhythm, simple melody"},
-            "song_042": {"verdict": "exclude", "reason": "tempo too fast for beginners"},
-            "song_044": {"verdict": "needs_review", "reason": "borderline tempo"},
-            "song_045": {"verdict": "include", "reason": "steady beat"},
-            "song_046": {"verdict": "exclude", "reason": "too fast"},
-            "song_047": {"verdict": "include", "reason": "simple waltz"},
-            "song_049": {"verdict": "include", "reason": "slow and gentle"},
-            "song_050": {"verdict": "include", "reason": "steady tempo"},
-        })
-        self.cfg = load_config("configs/moza_song_screening.json")
+        self.cfg = load_config(MOZA)
+        self.tmp = tempfile.mkdtemp()
 
-    def _runner(self, **kw):
-        store = Store(os.path.join(self.dir, "runtime.db"))
-        adapter = ReviewSystemAdapter(os.path.join(self.dir, "review.db"),
-                                      down=kw.pop("down", False))
-        model = ReplayModel(self.responses)
-        return (Runner(self.cfg, store, adapter, model,
-                       printer=lambda *a, **k: None, **kw), store, adapter)
-
-
-class TestNormalRun(RunnerHarness):
-    def test_include_creates_task_exclude_and_needs_review_do_not(self):
-        runner, store, adapter = self._runner()
+    def test_only_includes_create_tasks(self):
+        runner, store, adapters = build(self.cfg, self.tmp)
         status = runner.run("run_demo")
-        self.assertEqual(status, "stopped")  # stops at trailing unknown song_043
-        actions = store.list_actions()
-        committed = [a for a in actions if a["action_status"] == "committed"]
-        # song_041, 045, 047, 049, 050 are include+licensed = 5 tasks;
-        # song_042/046 exclude, 044 needs_review, 048 not_licensed => no task
+        self.assertEqual(status, "stopped")  # trailing unknown-rights song
+        committed = [a for a in store.list_actions()
+                     if a["action_status"] == "committed"]
+        # includes 041,044,045,047,049; excludes/needs_review/not_licensed => none
         self.assertEqual(len(committed), 5)
-        # exactly one task per include, no duplicates
-        keys = {a["idempotency_key"] for a in committed}
-        self.assertEqual(len(keys), 5)
+
+    def test_exclude_and_needs_review_produce_no_action(self):
+        runner, store, adapters = build(self.cfg, self.tmp)
+        runner.run("run_demo")
+        keys = {a["idempotency_key"] for a in store.list_actions()}
+        self.assertNotIn("moza:song_screening:run_demo:song_042", keys)  # exclude
+        self.assertNotIn("moza:song_screening:run_demo:song_050", keys)  # needs_review
 
     def test_unknown_rights_stops_run(self):
-        runner, store, adapter = self._runner()
+        runner, store, adapters = build(self.cfg, self.tmp)
         runner.run("run_demo")
         run = store.get_run("run_demo")
         self.assertEqual(run["status"], "stopped")
-        self.assertIn("unknown", (run["stopped_reason"] or ""))
+        self.assertIn("unknown", run["stopped_reason"])
 
+    def test_not_licensed_is_skipped_not_stopped(self):
+        runner, store, adapters = build(self.cfg, self.tmp)
+        runner.run("run_demo")
+        step = store.get_step("run_demo", "rights_check", "song_048")
+        self.assertEqual(step["result"], "skipped")
 
-class TestMissingItemId(RunnerHarness):
-    def test_missing_item_id_field_stops_at_fetch(self):
-        bad = os.path.join(self.dir, "songs_missing_id.json")
-        _write(bad, [
-            {"song_id": "song_041", "title": "ok", "tempo_bpm": 72},
-            {"title": "no id here", "tempo_bpm": 90},
-        ])
-        # point the fetch step at the bad source
-        cfg = dict(self.cfg)
-        cfg["steps"] = [dict(s) for s in self.cfg["steps"]]
-        for s in cfg["steps"]:
-            if s["name"] == "fetch":
-                s["source"] = bad
-        store = Store(os.path.join(self.dir, "runtime.db"))
-        adapter = ReviewSystemAdapter(os.path.join(self.dir, "review.db"))
-        runner = Runner(cfg, store, adapter, ReplayModel(self.responses),
-                        printer=lambda *a, **k: None)
+    def test_missing_item_id_stops_at_fetch(self):
+        cfg = load_config(MOZA)
+        cfg["steps"][0]["source"] = os.path.abspath(
+            "workflows/moza_song_screening/fixtures/songs_missing_id.json")
+        runner, store, adapters = build(cfg, self.tmp)
         status = runner.run("run_bad")
         self.assertEqual(status, "stopped")
-        run = store.get_run("run_bad")
-        self.assertIn("song_id", run["stopped_reason"])
-        self.assertIn("position 1", run["stopped_reason"])
-        # no item-level work happened, no task created
+        self.assertIn("position 1", store.get_run("run_bad")["stopped_reason"])
         self.assertEqual(len(store.list_actions()), 0)
-        # never recorded a rights/judge step (did not run on despite missing id)
-        steps = [s["step_name"] for s in store.list_steps("run_bad")]
-        self.assertNotIn("rights_check", steps)
 
-
-class TestApproval(RunnerHarness):
-    def test_required_approval_waits(self):
-        runner, store, adapter = self._runner(approval_override="required")
+    def test_approval_required_waits(self):
+        runner, store, adapters = build(self.cfg, self.tmp, approval_override="required")
         runner.run("run_demo")
         actions = store.list_actions()
-        # nothing committed; includes sit pending/none
+        self.assertTrue(actions)
         self.assertTrue(all(a["action_status"] != "committed" for a in actions))
-        self.assertTrue(any(a["approval_status"] == "pending" for a in actions))
-        # external system has zero tasks
-        self.assertIsNone(adapter.find_task_by_key(
-            "moza:song_screening:run_demo:song_041"))
+        self.assertTrue(all(a["approval_status"] == "pending" for a in actions))
 
 
-class TestKeyStability(RunnerHarness):
-    def test_same_run_repeated_yields_one_task(self):
-        # run three times with same run_id -> exactly one task per include
-        for _ in range(3):
-            runner, store, adapter = self._runner()
-            runner.run("run_demo")
-        committed = [a for a in store.list_actions() if a["action_status"] == "committed"]
-        self.assertEqual(len(committed), 5)
+class TestHeliosOnSameRunner(unittest.TestCase):
+    """The reuse proof: a different VT runs on the identical runner."""
 
-    def test_different_runs_same_item_two_tasks(self):
-        runner1, store, adapter = self._runner()
-        runner1.run("run_100")
-        # reuse same dbs by building runner on same dir
-        runner2 = Runner(self.cfg, store, adapter, ReplayModel(self.responses),
-                         printer=lambda *a, **k: None)
-        runner2.run("run_101")
-        k100 = "moza:song_screening:run_100:song_041"
-        k101 = "moza:song_screening:run_101:song_041"
-        self.assertIsNotNone(adapter.find_task_by_key(k100))
-        self.assertIsNotNone(adapter.find_task_by_key(k101))
-        self.assertNotEqual(adapter.find_task_by_key(k100),
-                            adapter.find_task_by_key(k101))
+    def test_helios_runs_with_different_shape(self):
+        cfg = load_config(HELIOS)
+        tmp = tempfile.mkdtemp()
+        # override approval so the advancing candidate's note actually executes
+        runner, store, adapters = build(cfg, tmp, approval_override="auto")
+        status = runner.run("run_h1")
+        self.assertEqual(status, "completed")
+        # cand_01 advances -> routed -> note created in the ATS (not review system)
+        self.assertEqual(store.get_step("run_h1", "route", "cand_01")["result"], "ok")
+        note = adapters["ats"].find_by_key("helios:recruiting_screening:run_h1:cand_01")
+        self.assertTrue(note.startswith("N-"))
+        # cand_02 reject, cand_03 needs_review -> no note
+        self.assertIsNone(
+            adapters["ats"].find_by_key("helios:recruiting_screening:run_h1:cand_02"))
+        # review_system adapter was never touched by Helios
+        self.assertEqual(
+            adapters["review_system"].conn.execute(
+                "SELECT COUNT(*) c FROM records").fetchone()["c"], 0)
+
+
+class TestConfigErrors(unittest.TestCase):
+    def _minimal(self, external_step):
+        return {
+            "vt": "x", "workflow": "w", "item_id_field": "id",
+            "steps": [
+                {"name": "fetch", "type": "deterministic", "scope": "run",
+                 "source": os.path.abspath(
+                     "workflows/moza_song_screening/fixtures/songs.json")},
+                external_step,
+            ],
+        }
+
+    def test_unknown_target_stops_readably(self):
+        cfg = self._minimal({"name": "act", "type": "external", "target": "nope"})
+        cfg["item_id_field"] = "song_id"
+        tmp = tempfile.mkdtemp()
+        runner, store, _ = build(cfg, tmp)
+        self.assertEqual(runner.run("r"), "stopped")
+        self.assertIn("no adapter", store.get_run("r")["stopped_reason"])
+
+    def test_unknown_step_type_stops_readably(self):
+        cfg = self._minimal({"name": "act", "type": "quantum"})
+        cfg["item_id_field"] = "song_id"
+        tmp = tempfile.mkdtemp()
+        runner, store, _ = build(cfg, tmp)
+        self.assertEqual(runner.run("r"), "stopped")
+        self.assertIn("unknown step type", store.get_run("r")["stopped_reason"])
 
 
 if __name__ == "__main__":

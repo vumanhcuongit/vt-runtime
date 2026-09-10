@@ -1,9 +1,10 @@
-"""Model provider abstraction.
+"""Model adapter -- the AI decision, behind an interface.
 
-ReplayModel replays fixtures recorded from real calls, so the runner
-needs no API key at demo time. LiveModel is a deliberate stub: the
-interface exists so the "real LLM decision" has a concrete home and can
-be wired later without touching the runner.
+ReplayModel replays fixtures recorded from a real model, so the demo needs
+no API key. LiveModel is a deliberate stub: the interface exists so the
+real model decision has a concrete home and can be wired without touching
+the runner. Keeping this behind an adapter is also how the platform avoids
+depending on one model provider.
 """
 import json
 

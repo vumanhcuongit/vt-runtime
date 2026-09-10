@@ -1,10 +1,12 @@
-PY := PYTHONPATH=src python3 -m vt_runtime
-MOZA := configs/moza_song_screening.json
+PY := python3 cli.py
+MOZA := workflows/moza_song_screening/config.json
+HELIOS := workflows/helios_recruiting_screening/config.json
 # crash demos use a single-include-song source so the story is crisp:
 # "one task should exist; after crash + retry, exactly one does -- not two".
-CRASH_SRC := fixtures/songs_crash.json
+CRASH_SRC := workflows/moza_song_screening/fixtures/songs_crash.json
+MISSING_SRC := workflows/moza_song_screening/fixtures/songs_missing_id.json
 
-.PHONY: preflight demo demo-crash-a demo-crash-b demo-crash-b-down demo-approval demo-two-runs demo-missing-id inspect reset test
+.PHONY: preflight demo demo-crash-a demo-crash-b demo-crash-b-down demo-approval demo-two-runs demo-missing-id demo-helios inspect reset test
 
 # Verify the only requirement (Python 3 with its bundled sqlite3) before any
 # demo. SQLite ships inside CPython; this only ever fails on a hand-built
@@ -57,7 +59,14 @@ demo-two-runs: preflight reset
 
 demo-missing-id: preflight reset
 	@echo "--- item missing its song_id: run must stop at fetch, no index fallback ---"
-	$(PY) run --config $(MOZA) --run-id run_missing --source fixtures/songs_missing_id.json
+	$(PY) run --config $(MOZA) --run-id run_missing --source $(MISSING_SRC)
+	@echo
+	$(PY) inspect
+
+demo-helios: preflight reset
+	@echo "--- SAME runner, DIFFERENT VT: helios recruiting screening ---"
+	@echo "    (approval overridden to auto so the advancing candidate's note executes)"
+	$(PY) run --config $(HELIOS) --run-id run_helios --approval auto
 	@echo
 	$(PY) inspect
 
@@ -68,4 +77,4 @@ reset:
 	rm -rf state
 
 test: preflight
-	PYTHONPATH=src python3 -m unittest discover -s tests -v
+	python3 -m unittest discover -s tests -v

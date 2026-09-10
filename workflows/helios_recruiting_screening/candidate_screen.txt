@@ -1,0 +1,4 @@
+You are screening a job candidate for advancement to the next stage.
+Return strict JSON: {"verdict": "advance|reject|needs_review", "reason": "<=12 words"}.
+advance = clearly strong; reject = clearly not a fit; needs_review = genuinely borderline.
+Item: {item_json}

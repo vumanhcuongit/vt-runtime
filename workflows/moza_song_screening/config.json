@@ -1,0 +1,11 @@
+{
+  "vt": "moza",
+  "workflow": "song_screening",
+  "item_id_field": "song_id",
+  "steps": [
+    {"name": "fetch", "type": "deterministic", "scope": "run", "source": "fixtures/songs.json"},
+    {"name": "rights_check", "type": "deterministic", "lookup": "fixtures/rights.json", "pass_values": ["licensed"], "unknown_values": ["unknown"], "on_unknown": "stop"},
+    {"name": "judge", "type": "model", "prompt": "teaching_suitability.txt", "responses": "fixtures/model_responses.json", "outcomes": ["include", "exclude", "needs_review"], "proceed_when": ["include"]},
+    {"name": "create_task", "type": "external", "target": "review_system", "operation": "create_task", "approval": "auto", "idempotent": true}
+  ]
+}

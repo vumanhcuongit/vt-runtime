@@ -1,14 +1,15 @@
-"""Human-readable state dump.
+"""Observability: one shared row format + a state dump.
 
-Runner state (runs/steps) and the external-action ledger are rendered as
-separate blocks: they have different lifecycles, and a reader should be
-able to answer at a glance -- what ran, what was decided, what action
-happened, did it succeed.
+Part 4 asks that a reader be able to answer, with no explanation: what
+ran, what was decided, what action happened, did it succeed. Runner state
+(runs/steps) and the external-action ledger are rendered as separate
+blocks because they have different lifecycles.
+
+The runner's live output and `inspect` share `format_row`, so they line
+up exactly. Nothing here knows about any specific workflow's domain.
 """
 
-# One shared row format so the runner's live output and `inspect` line up
-# exactly (columns wide enough for "rights_check" / "create_task").
-_STEP_W, _ITEM_W, _RESULT_W = 12, 10, 12
+_STEP_W, _ITEM_W, _RESULT_W = 12, 12, 12
 
 
 def step_header() -> str:

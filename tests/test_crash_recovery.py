@@ -1,69 +1,71 @@
+"""The scenario the brief names, tested across a REAL process boundary.
+
+The crash is os._exit(137), so it can only be exercised by running the CLI
+as a subprocess -- which is also the point: state must survive a genuine
+process death, not linger in memory.
+"""
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from vt_runtime.state import Store
-from vt_runtime.adapter import ReviewSystemAdapter
+
+from core.state import Store
+from adapters.external import ReviewSystemAdapter
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-MOZA = "configs/moza_song_screening.json"
-# single-include-song source: the crash story is about ONE task existing exactly
-# once, so we scope the run to one song and assert "1 task, never 2".
-CRASH_SRC = "fixtures/songs_crash.json"
+MOZA = "workflows/moza_song_screening/config.json"
+# single-include-song source: the crash story is about ONE task existing
+# exactly once, so we scope the run to one song and assert "1 task, never 2".
+CRASH_SRC = "workflows/moza_song_screening/fixtures/songs_crash.json"
+KEY = "moza:song_screening:{run}:song_041"
 
 
-def run_cli(state_dir, *extra):
-    env = dict(os.environ, PYTHONPATH=os.path.join(REPO, "src"))
+def run_cli(state_dir, run_id, *extra):
     return subprocess.run(
-        [sys.executable, "-m", "vt_runtime", "run", "--config", MOZA,
-         "--source", CRASH_SRC, "--state-dir", state_dir, *extra],
-        cwd=REPO, env=env, capture_output=True, text=True,
+        [sys.executable, "cli.py", "run", "--config", MOZA,
+         "--source", CRASH_SRC, "--state-dir", state_dir, "--run-id", run_id, *extra],
+        cwd=REPO, capture_output=True, text=True,
     )
 
 
-def count_tasks(state_dir):
+def count_records(state_dir):
     a = ReviewSystemAdapter(os.path.join(state_dir, "review_system.db"))
-    return a.conn.execute("SELECT COUNT(*) AS c FROM tasks").fetchone()["c"]
+    return a.conn.execute("SELECT COUNT(*) c FROM records").fetchone()["c"]
 
 
 class TestCrashA(unittest.TestCase):
-    def test_crash_a_then_retry_creates_once(self):
+    def test_crash_before_call_then_retry_creates_once(self):
         d = tempfile.mkdtemp()
-        # crash A leaves 'intent', no task in external system
-        p1 = run_cli(d, "--run-id", "run_a", "--crash-at", "A")
-        self.assertNotEqual(p1.returncode, 0)  # os._exit(137)
-        # retry: reconcile says 'no' -> create now, exactly one
-        p2 = run_cli(d, "--run-id", "run_a")
-        self.assertEqual(p2.returncode, 0)
-        self.assertEqual(count_tasks(d), 1)
-        key = "moza:song_screening:run_a:song_041"
+        p1 = run_cli(d, "run_a", "--crash-at", "A")
+        self.assertNotEqual(p1.returncode, 0)   # os._exit(137)
+        self.assertEqual(count_records(d), 0)   # call never happened
+        self.assertEqual(run_cli(d, "run_a").returncode, 0)
+        self.assertEqual(count_records(d), 1)   # created on retry
         st = Store(os.path.join(d, "runtime.db"))
-        self.assertEqual(st.get_action(key)["action_status"], "committed")
+        self.assertEqual(st.get_action(KEY.format(run="run_a"))["action_status"],
+                         "committed")
 
 
 class TestCrashB(unittest.TestCase):
-    def test_crash_b_then_retry_does_not_duplicate(self):
+    def test_crash_after_call_then_retry_does_not_duplicate(self):
         d = tempfile.mkdtemp()
-        # crash B: task exists in external system, ledger still 'intent'
-        p1 = run_cli(d, "--run-id", "run_b", "--crash-at", "B")
+        p1 = run_cli(d, "run_b", "--crash-at", "B")
         self.assertNotEqual(p1.returncode, 0)
-        self.assertEqual(count_tasks(d), 1)  # the task WAS created
-        # retry three times: reconcile finds it, never creates a second
-        for _ in range(3):
-            self.assertEqual(run_cli(d, "--run-id", "run_b").returncode, 0)
-        self.assertEqual(count_tasks(d), 1)
+        self.assertEqual(count_records(d), 1)   # the action DID happen
+        for _ in range(3):                      # retry three times
+            self.assertEqual(run_cli(d, "run_b").returncode, 0)
+        self.assertEqual(count_records(d), 1)   # reconcile, never a second
 
 
 class TestCrashBExternalDown(unittest.TestCase):
     def test_down_retry_stays_intent_and_stops(self):
         d = tempfile.mkdtemp()
-        run_cli(d, "--run-id", "run_b", "--crash-at", "B")
-        # retry with external down: cannot reconcile -> stays intent, stops
-        run_cli(d, "--run-id", "run_b", "--external", "down")
-        key = "moza:song_screening:run_b:song_041"
+        run_cli(d, "run_b", "--crash-at", "B")
+        run_cli(d, "run_b", "--external", "down")
         st = Store(os.path.join(d, "runtime.db"))
-        self.assertEqual(st.get_action(key)["action_status"], "intent")
+        self.assertEqual(st.get_action(KEY.format(run="run_b"))["action_status"],
+                         "intent")
         self.assertEqual(st.get_run("run_b")["status"], "stopped")
 
 

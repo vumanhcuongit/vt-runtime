@@ -1,0 +1,5 @@
+[
+  {"candidate_id": "cand_01", "name": "Placeholder One", "role": "engineer", "years_experience": 7, "headline": "Senior backend engineer, distributed systems, strong references"},
+  {"candidate_id": "cand_02", "name": "Placeholder Two", "role": "designer", "years_experience": 0, "headline": "No portfolio provided, unrelated background"},
+  {"candidate_id": "cand_03", "name": "Placeholder Three", "role": "engineer", "years_experience": 2, "headline": "Full-stack, promising but thin on the required domain"}
+]

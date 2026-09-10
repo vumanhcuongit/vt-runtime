@@ -1,11 +1,18 @@
-"""Record model fixtures from a real OpenRouter call. Run ONCE, offline of
-the demo. The demo itself never needs a key -- it replays this file.
+"""Record model fixtures for a workflow from a real model via OpenRouter.
 
-Usage:
-    OPENROUTER_API_KEY=sk-... python3 tools/record_fixtures.py
+Run ONCE per workflow, offline of the demo. The demo replays the recorded
+file and needs no key. Config-driven, so the same tool records fixtures
+for any workflow that has a model step:
 
-Uses only the standard library (urllib) -- no SDK, no new dependency.
+    OPENROUTER_API_KEY=... python3 tools/record_fixtures.py \
+        --config workflows/moza_song_screening/config.json
+
+Uses only the standard library (urllib) -- no SDK, no dependency. Free
+models are heavily rate-limited (HTTP 429); a paid model records in one
+pass. Progress is saved after each item and already-recorded items are
+skipped, so a run is resumable.
 """
+import argparse
 import json
 import os
 import sys
@@ -13,12 +20,12 @@ import time
 import urllib.error
 import urllib.request
 
-MODEL = "deepseek/deepseek-v4-pro-0813"  # recorded once; the demo replays the fixtures
-URL = "https://openrouter.ai/api/v1/chat/completions"
-OUTCOMES = ["include", "exclude", "needs_review"]
+# repo root on path so we can reuse the real config loader (path resolution)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.runner import load_config  # noqa: E402
 
-# Free models are heavily rate-limited (HTTP 429). Retry with backoff and
-# pace requests so a full recording run completes on the free tier.
+MODEL = "deepseek/deepseek-v4-pro-0813"  # recorded once; the demo replays it
+URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_RETRIES = 12
 BACKOFF_SECONDS = 6
 
@@ -37,8 +44,7 @@ def call(api_key, prompt):
     for attempt in range(MAX_RETRIES):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.load(resp)
-            return data["choices"][0]["message"]["content"]
+                return json.load(resp)["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < MAX_RETRIES - 1:
                 time.sleep(BACKOFF_SECONDS)
@@ -46,55 +52,50 @@ def call(api_key, prompt):
             raise
 
 
-def parse(content):
+def parse(content, outcomes):
     start, end = content.find("{"), content.rfind("}")
     obj = json.loads(content[start:end + 1])
     verdict = obj["verdict"].strip()
-    if verdict not in OUTCOMES:
-        raise ValueError(f"model returned verdict {verdict!r} not in {OUTCOMES}")
+    if verdict not in outcomes:
+        raise ValueError(f"model returned verdict {verdict!r} not in {outcomes}")
     return {"verdict": verdict, "reason": obj.get("reason", "")[:80]}
 
 
-OUT_PATH = "fixtures/model_responses.json"
-
-
-def _load_existing():
-    if os.path.exists(OUT_PATH):
-        with open(OUT_PATH) as f:
-            return json.load(f)
-    return {}
-
-
-def _save(out):
-    with open(OUT_PATH, "w") as f:
-        json.dump(out, f, indent=2)
-
-
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True)
+    args = ap.parse_args()
+
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         print("Set OPENROUTER_API_KEY", file=sys.stderr)
         return 1
-    with open("fixtures/songs.json") as f:
-        songs = json.load(f)
-    with open("prompts/teaching_suitability.txt") as f:
+
+    cfg = load_config(args.config)          # resolves paths to absolute
+    item_id_field = cfg["item_id_field"]
+    fetch_step = cfg["steps"][0]
+    model_step = next(s for s in cfg["steps"] if s["type"] == "model")
+
+    with open(fetch_step["source"]) as f:
+        items = json.load(f)
+    with open(model_step["prompt"]) as f:
         template = f.read()
-    # Accumulate: keep anything already recorded so bursts add up across runs
-    # (free-tier rate limits often force several passes).
-    out = _load_existing()
-    for song in songs:
-        sid = song["song_id"]
-        if sid in out:
-            print(f"skip {sid} (already recorded: {out[sid]['verdict']})")
+    out_path = model_step["responses"]
+    out = json.load(open(out_path)) if os.path.exists(out_path) else {}
+
+    for item in items:
+        iid = item[item_id_field]
+        if iid in out:
+            print(f"skip {iid} (already recorded: {out[iid]['verdict']})")
             continue
-        prompt = template.replace("{song_json}", json.dumps(song))
+        prompt = template.replace("{item_json}", json.dumps(item))
         try:
-            out[sid] = parse(call(api_key, prompt))
-            _save(out)  # persist immediately so progress is never lost
-            print(f"recorded {sid}: {out[sid]['verdict']}")
+            out[iid] = parse(call(api_key, prompt), model_step["outcomes"])
+            json.dump(out, open(out_path, "w"), indent=2)
+            print(f"recorded {iid}: {out[iid]['verdict']}")
         except Exception as e:  # noqa: BLE001 - one-off tool, surface and continue
-            print(f"FAILED {sid}: {e}", file=sys.stderr)
-    print(f"{OUT_PATH}: {len(out)}/{len(songs)} songs recorded")
+            print(f"FAILED {iid}: {e}", file=sys.stderr)
+    print(f"{out_path}: {len(out)}/{len(items)} items recorded")
     return 0
 
 
