@@ -1,18 +1,38 @@
 # VT Runtime
 
-One reusable platform capability: a **config-driven workflow runner** with
-durable state that recovers from a crash without repeating an external action —
-and that runs **more than one Virtual Talent through configuration, not code.**
+One reusable platform capability: a **thin write-boundary** — `platform.write()`
+— that performs a VT's external actions **exactly once** across crashes and
+retries, behind a derived idempotency key, a decision ledger, and an approval
+gate.
 
-## 1. What this is
+## 1. What this is (and what the runner is)
 
-Musea's Virtual Talents (VTs) each re-solved the same infrastructure: run steps
-in order, record what happened, gate risky actions, and — the dangerous one —
-avoid performing an external action twice after a crash. This is the shared
-machinery underneath them: **reliable workflow execution with safe external
-actions.** It is deliberately **not** Moza, not Helios, not "the platform" —
-just the runner. Two VTs (Moza song-screening and Helios recruiting-screening)
-run on it from config alone, to show the capability generalizes.
+The capability is the **write-boundary** in `core/platform.py`: identity +
+decision ledger + write-once + approval enforcement, exposed as one call a VT
+makes from its own code —
+
+```
+platform.write(vt, workflow, run_id, item_id, operation, target, payload)
+```
+
+This is the piece the case study (Parts 1–3) argues to build *first*: the one
+thing every VT would otherwise re-implement and get wrong differently — a
+duplicated task, a duplicated ATS note — after a crash. Getting idempotent
+external actions right is hard exactly once; this boundary does it once, for all
+of them.
+
+**The runner is a harness, not the capability.** To exercise the boundary
+end-to-end without a real VT, this repo includes a small config-driven step
+runner (`core/runner.py`) that loads items and calls `platform.write()` for each
+external step. It's a demonstration vehicle. In production the boundary is a
+**library a VT imports** and calls in place of its raw external call — its own
+logic unchanged — *not* an engine that runs the VT as config. (See
+[§ Relationship to the case study](#12-relationship-to-the-case-study-parts-13)
+for why that distinction matters and where this prototype's shape diverges from
+the plan.)
+
+Two VTs (Moza song-screening, Helios recruiting-screening) run through the same
+boundary on the same harness, to show the boundary is domain-agnostic.
 
 ## 2. Setup
 
@@ -38,10 +58,10 @@ rebuild the VTs*. That's a burden of proof: the layout should let a reader
 ```
 vt-runtime/
 ├── cli.py                      thin entry point (the Makefile calls this)
-├── core/                       ← the reusable capability; ZERO domain words
-│   ├── runner.py               execution: dispatch steps by TYPE, not by name
+├── core/                       ← domain-agnostic code; ZERO domain words
+│   ├── platform.py             ★ THE CAPABILITY: platform.write() — key + ledger + approval + reconcile
+│   ├── runner.py               harness: loads items, calls platform.write() per external step
 │   ├── state.py                durable SQLite: runs/steps + external_actions ledger
-│   ├── actions.py              safe external actions: 3-state lifecycle + key + approval + reconcile
 │   └── observability.py        the state dump every command prints
 ├── adapters/                   ← the outside world, behind interfaces
 │   ├── model.py                ModelProvider | ReplayModel | LiveModel
@@ -197,18 +217,25 @@ changes: a model must not fabricate something that looks like a lookup result.
 reason, and leaves it `stopped` (never a silent crash that strands the run at
 `running`). One halt mechanism for everything the platform can't resolve.
 
-## 8. Adding a workflow — does this structure make it easy?
+## 8. Adding a workflow — and the honest limit of the Helios demo
 
-Yes, and the repo proves it rather than claiming it. **Helios runs on the same
-runner** (`make demo-helios`): a different step **order** (judge → route →
+**Helios runs on the same harness** (`make demo-helios`) through the same
+`platform.write()` boundary: a different step **order** (judge → route →
 create_note), a different identifier (`candidate_id`), a different external
-target (an ATS, producing `N-` notes), and a different approval default. No
-`core/` or `adapters/` code changed to make Moza *or* Helios run — the runner
-dispatches by step **type** (`deterministic` / `model` / `external`), and the
-deterministic type covers both a **lookup** gate (Moza rights) and a **map**
-annotation (Helios routing).
+target (an ATS, `N-` notes), a different approval default — no `core/` change.
 
-So "add a new VT" breaks into three honest cases:
+But be precise about what that proves. Helios is Moza **reordered**: same shape
+(a flat list, one model decision, at most one external action per item). It
+demonstrates the runner *tolerates reordering and re-targeting*; it does **not**
+prove the boundary generalizes to a **structurally different** workflow — an
+event trigger instead of a file fetch, an action whose body carries the
+decision's reason, two dependent external actions per item, or a step that
+consumes a prior step's output. Those would exercise the boundary harder, and
+some would touch `core/` (see §12). Part 1 of the case study says as much: *"a
+second workflow chosen because it resembles the first proves nothing."* Helios is
+that lookalike, included to show domain-agnosticism, not to overclaim generality.
+
+For the boundary itself, "add a new VT" breaks into three honest cases:
 
 | The new workflow needs… | Cost |
 |---|---|
@@ -285,3 +312,36 @@ change.
 - **No `web/`, `scheduler/`, `event_bus/`, layered `domain/…/infrastructure/`.**
   Each would need a justification that doesn't exist yet at this size; the brief
   rewards restraint. Absence here is a decision, not an omission.
+
+## 12. Relationship to the case study (Parts 1–3)
+
+Worth stating plainly, because a careful reader will check the artifact against
+the plan. Parts 1–3 argue for a **thin boundary a VT imports** (`platform.write`,
+identity, decision record, write-once, enforcement) with **the VT's control flow
+left where it is** — and they explicitly **defer the workflow scaffold** to the
+second migration, warning that "a second workflow chosen because it resembles the
+first proves nothing."
+
+This prototype's **write-boundary (`core/platform.py`) is exactly that proposed
+capability** — and it is the part every review found strongest. Its `run_id` rule
+(trigger-supplied, never generated) matches Part 3's derived key from the trigger
+instance.
+
+Where it **diverges** from the plan, on purpose and worth owning:
+
+- It ships a **step runner** (the deferred scaffold) as a *harness* to exercise
+  the boundary end-to-end in one `make demo`. A runner that owns the loop inverts
+  the control direction the plan describes ("Moza calls the shared module", not
+  "the module runs Moza-as-config"). The shape that would ship to Musea is
+  `platform.write()` called from Moza's existing code — the runner is scaffolding,
+  not the deliverable.
+- **Helios is a lookalike** (see §8), included for domain-agnosticism, not as
+  proof of generality — consistent with Part 1's own warning.
+- The decision ledger records the key, status and result but **not yet** Part 3's
+  full provenance (`prompt_version · model · model_config · approver`); those are
+  cheap to add and are what a later regression check needs.
+
+None of that is load-bearing for the crash/idempotency guarantee, which is the
+capability. It's the packaging that, taken literally, over-claims — so this
+section says what the prototype is (a proven write-boundary) and what it is not
+(the engine).

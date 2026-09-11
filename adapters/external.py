@@ -25,7 +25,7 @@ class ExternalUnavailable(Exception):
 
 
 class ExternalAdapter:
-    def execute(self, action: dict, idempotency_key: str) -> str:
+    def execute(self, payload, idempotency_key: str) -> str:
         raise NotImplementedError
 
     def reconcile(self, idempotency_key: str):
@@ -55,7 +55,10 @@ class _SqliteLedgerAdapter(ExternalAdapter):
         ).fetchone()
         return row["record_id"] if row else None
 
-    def execute(self, action: dict, idempotency_key: str) -> str:
+    def execute(self, payload, idempotency_key: str) -> str:
+        # A real target would build its record from `payload` (e.g. a Slack
+        # message body); this mock records an id keyed by idempotency_key and
+        # ignores the body -- see README "what is mocked".
         if self.down:
             raise ExternalUnavailable("external system is down")
         existing = self.find_by_key(idempotency_key)

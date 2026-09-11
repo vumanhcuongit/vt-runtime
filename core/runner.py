@@ -14,7 +14,7 @@ import json
 import os
 
 from core.observability import format_row
-from core.actions import RunStopped, derive_key, perform_external
+from core.platform import Platform, RunStopped
 
 # fields in a step whose values are file paths, resolved relative to the
 # config file so each workflow folder is self-contained
@@ -37,11 +37,12 @@ class Runner:
                  crash_at=None, approval_override=None, printer=print):
         self.cfg = config
         self.store = store
-        self.adapters = adapters          # dict: target -> ExternalAdapter
         self.model = model
         self.crash_at = crash_at
         self.approval_override = approval_override
         self.print = printer
+        # the reusable capability; the runner is just a caller of it
+        self.platform = Platform(store, adapters, printer=printer)
         self.vt = config["vt"]
         self.workflow = config["workflow"]
         self.item_id_field = config["item_id_field"]
@@ -129,20 +130,16 @@ class Runner:
         if t == "model":
             return self._model(run_id, step, item, item_id)
         if t == "external":
-            adapter = self._adapter_for(step)
-            key = derive_key(self.vt, self.workflow, run_id, step["name"], item_id)
-            perform_external(self.store, adapter, run_id, item_id, key, step,
-                             approval_override=self.approval_override,
-                             crash_at=self.crash_at, printer=self.print)
+            # the workflow hands the intended business action to the platform;
+            # the platform owns the write-once + approval + reconcile logic
+            self.platform.write(
+                vt=self.vt, workflow=self.workflow, run_id=run_id,
+                item_id=item_id, operation=step["name"], target=step["target"],
+                payload=item,
+                approval=self.approval_override or step.get("approval", "auto"),
+                crash_at=self.crash_at)
             return True
         raise RunStopped(f"unknown step type '{t}' in step '{step['name']}'")
-
-    def _adapter_for(self, step):
-        target = step["target"]
-        if target not in self.adapters:
-            raise RunStopped(f"no adapter registered for target '{target}' "
-                             f"(step '{step['name']}')")
-        return self.adapters[target]
 
     # ---- deterministic: lookup (gate) or map (annotate) ----
     def _deterministic(self, run_id, step, item, item_id) -> bool:

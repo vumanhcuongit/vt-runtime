@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from core.actions import derive_key, perform_external
+from core.platform import Platform, derive_key
 from core.runner import load_config, Runner
 from core.state import Store
 from adapters.external import (
@@ -149,19 +149,20 @@ class TestRunnerPreventsDuplicateNotMock(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         adapter = PlainInsertAdapter(os.path.join(tmp, "ext.db"))
         store = Store(os.path.join(tmp, "runtime.db"))
-        step = {"name": "create_task", "approval": "auto", "idempotent": True}
+        platform = Platform(store, {"review_system": adapter},
+                            printer=lambda *a, **k: None)
         key = derive_key("moza", "song_screening", "run_b", "create_task", "song_041")
         # simulate crash-B: the action already executed once; the ledger was
         # left at `intent` because the commit never happened.
-        adapter.execute(step, key)
+        adapter.execute({}, key)
         self.assertEqual(adapter.count(), 1)
         store.create_run("run_b", "moza", "song_screening")
         store.create_action(key, "run_b", "approved", "intent")
-        # retry: the runner must reconcile (YES) and NOT execute again
-        perform_external(store, adapter, "run_b", "song_041", key, step,
-                         approval_override=None, crash_at=None,
-                         printer=lambda *a, **k: None)
-        self.assertEqual(adapter.count(), 1)  # would be 2 if the runner blindly re-executed
+        # retry through the boundary: it must reconcile (YES) and NOT re-execute
+        platform.write(vt="moza", workflow="song_screening", run_id="run_b",
+                       item_id="song_041", operation="create_task",
+                       target="review_system", payload={})
+        self.assertEqual(adapter.count(), 1)  # would be 2 if it blindly re-executed
         self.assertEqual(store.get_action(key)["action_status"], "committed")
 
 
