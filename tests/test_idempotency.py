@@ -70,5 +70,24 @@ class TestNoDuplicateAcrossRepeats(unittest.TestCase):
         self.assertNotEqual(t100, t101)
 
 
+class TestCompletedRunReplay(unittest.TestCase):
+    def test_rerunning_a_completed_run_is_a_noop(self):
+        # whole-run replay safety: re-running a completed run_id creates nothing
+        cfg = load_config(MOZA)
+        tmp = tempfile.mkdtemp()
+        cfg["steps"][0]["source"] = os.path.abspath(
+            "workflows/moza_song_screening/fixtures/songs_crash.json")  # completes
+        r1, store, adapters = build(cfg, tmp)
+        self.assertEqual(r1.run("run_c"), "completed")
+        n_after_first = adapters["review_system"].conn.execute(
+            "SELECT COUNT(*) c FROM records").fetchone()["c"]
+        self.assertEqual(n_after_first, 1)
+        # reopen state, run the same id again -> early return, no new action
+        r2, store2, adapters2 = build(cfg, tmp)
+        self.assertEqual(r2.run("run_c"), "completed")
+        self.assertEqual(adapters2["review_system"].conn.execute(
+            "SELECT COUNT(*) c FROM records").fetchone()["c"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

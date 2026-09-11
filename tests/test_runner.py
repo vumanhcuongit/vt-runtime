@@ -118,7 +118,8 @@ class TestConfigErrors(unittest.TestCase):
         }
 
     def test_unknown_target_stops_readably(self):
-        cfg = self._minimal({"name": "act", "type": "external", "target": "nope"})
+        cfg = self._minimal({"name": "act", "type": "external", "target": "nope",
+                             "idempotent": True})
         cfg["item_id_field"] = "song_id"
         tmp = tempfile.mkdtemp()
         runner, store, _ = build(cfg, tmp)
@@ -132,6 +133,44 @@ class TestConfigErrors(unittest.TestCase):
         runner, store, _ = build(cfg, tmp)
         self.assertEqual(runner.run("r"), "stopped")
         self.assertIn("unknown step type", store.get_run("r")["stopped_reason"])
+
+    def test_external_without_idempotency_contract_is_refused(self):
+        # an external step with no `idempotent: true` must be refused before
+        # it can act -- the platform enforces the contract, not just trusts it
+        cfg = self._minimal({"name": "act", "type": "external", "target": "review_system"})
+        cfg["item_id_field"] = "song_id"
+        tmp = tempfile.mkdtemp()
+        runner, store, adapters = build(cfg, tmp)
+        self.assertEqual(runner.run("r"), "stopped")
+        self.assertIn("idempotency contract", store.get_run("r")["stopped_reason"])
+        # nothing was created
+        self.assertEqual(adapters["review_system"].conn.execute(
+            "SELECT COUNT(*) c FROM records").fetchone()["c"], 0)
+
+
+class TestModelFailureHalts(unittest.TestCase):
+    """A malformed model verdict is a controlled halt, not an uncaught crash
+    that leaves the run stuck at 'running'."""
+
+    def test_out_of_contract_verdict_stops_run_cleanly(self):
+        import json
+        cfg = load_config(MOZA)
+        tmp = tempfile.mkdtemp()
+        cfg["steps"][0]["source"] = os.path.abspath(
+            "workflows/moza_song_screening/fixtures/songs_crash.json")  # one song
+        bad = os.path.join(tmp, "bad_responses.json")
+        with open(bad, "w") as f:
+            json.dump({"song_041": {"verdict": "banana", "reason": "not an outcome"}}, f)
+        for s in cfg["steps"]:
+            if s["type"] == "model":
+                s["responses"] = bad
+        runner, store, adapters = build(cfg, tmp)
+        status = runner.run("run_bad_model")   # must NOT raise
+        self.assertEqual(status, "stopped")
+        run = store.get_run("run_bad_model")
+        self.assertEqual(run["status"], "stopped")          # not stuck at "running"
+        self.assertIn("model decision failed", run["stopped_reason"])
+        self.assertEqual(len(store.list_actions()), 0)      # no external action
 
 
 if __name__ == "__main__":

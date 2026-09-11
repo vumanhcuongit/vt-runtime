@@ -130,6 +130,13 @@ An action awaiting a person definitely hasn't happened, so it can never be
 needs approval* — is a one-line config change (`approval: auto → required`), not
 new code.
 
+**The runner enforces the idempotency contract**: an external step that doesn't
+declare `idempotent: true` is refused before it can act — the platform doesn't
+take the config's word for it. Everything the runner can't safely resolve —
+unknown rights, a reconcile that can't answer, a missing identifier, a model
+verdict outside the configured `outcomes` — routes through the *same* controlled
+`stopped` state with a readable reason (see §7), never a silent crash.
+
 ## 6. The idempotency key
 
 Derived, never generated:
@@ -169,6 +176,12 @@ Two Moza steps both *look* like model questions:
 **The condition that flips it:** where rights arrive as documents rather than a
 registry, extraction becomes a **model step behind a human gate**. What never
 changes: a model must not fabricate something that looks like a lookup result.
+
+**When the model breaks its contract** — a verdict outside the configured
+`outcomes`, or no response for an item — the runner treats it exactly like
+`on_unknown: stop`: it records an `error` step, halts the run with a readable
+reason, and leaves it `stopped` (never a silent crash that strands the run at
+`running`). One halt mechanism for everything the platform can't resolve.
 
 ## 8. Adding a workflow — does this structure make it easy?
 
@@ -230,8 +243,6 @@ change.
   "did action K happen?". Production should prefer a target that accepts an
   idempotency key **natively** so the *system* dedupes; lookup-and-reconcile is
   the fallback.
-- **`idempotent: true` is a declaration the runner trusts.** A real platform
-  should *refuse* an external action lacking an idempotency contract.
 - **State is local SQLite** under `state/`.
 - **The external mock hides real semantics.** A local mock proves the recovery
   logic, not that a specific task tracker or ATS behaves this way.

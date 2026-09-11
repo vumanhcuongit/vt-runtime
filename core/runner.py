@@ -56,6 +56,7 @@ class Runner:
 
         fetch_step, item_steps = self.steps[0], self.steps[1:]
         try:
+            self._validate_steps()
             items = self._fetch(run_id, fetch_step)
             for item in items:
                 item_id = item[self.item_id_field]
@@ -70,6 +71,16 @@ class Runner:
         self.store.set_run_status(run_id, "completed")
         self.print(f"RUN {run_id} completed.")
         return "completed"
+
+    def _validate_steps(self):
+        # An external action must carry an idempotency contract. A real
+        # platform should refuse to act on one that doesn't, rather than
+        # taking the config's word for it -- so the runner enforces it.
+        for step in self.steps:
+            if step["type"] == "external" and not step.get("idempotent"):
+                raise RunStopped(
+                    f"external step '{step['name']}' declares no idempotency "
+                    f"contract (idempotent: true); refusing to perform it")
 
     # ---- run-level fetch ----
     def _fetch(self, run_id, step):
@@ -169,7 +180,18 @@ class Runner:
             return prior["result"] in step.get("proceed_when", [])
         with open(step["prompt"]) as f:
             prompt = f.read()
-        verdict, reason = self.model.judge(item_id, item, prompt, step["outcomes"])
+        # A model that returns a verdict outside the configured outcomes (or
+        # no response at all) is a contract violation. Route it through the
+        # same controlled halt as on_unknown -- one "the platform doesn't
+        # know what to do here" mechanism, never a silent crash that leaves
+        # the run stuck at "running".
+        try:
+            verdict, reason = self.model.judge(item_id, item, prompt, step["outcomes"])
+        except (ValueError, KeyError) as e:
+            detail = f"model decision failed for {item_id}: {e}"
+            self.store.record_step(run_id, step["name"], item_id, "error", detail)
+            self.print(format_row(step["name"], item_id, "error", detail))
+            raise RunStopped(detail)
         self.store.record_step(run_id, step["name"], item_id, verdict, reason)
         self.print(format_row(step["name"], item_id, verdict, reason))
         return verdict in step.get("proceed_when", [])
