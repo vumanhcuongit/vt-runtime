@@ -57,7 +57,7 @@ from crash-B (call happened). So the retry does not guess.
         └── yes, T-991 ──► mark committed, do NOT create again
 ```
 
-Because the idempotency key is **derived** (`vt:workflow:run_id:step:item_id`)
+Because the idempotency key is **derived** (`vt:workflow:run_id:operation:item_id`)
 and the retry reuses the same `run_id`, the key is identical to the one the
 first attempt used — so reconcile finds the existing task instead of making
 a second.

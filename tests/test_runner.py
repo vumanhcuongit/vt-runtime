@@ -87,9 +87,13 @@ class TestHeliosOnSameRunner(unittest.TestCase):
 
     def test_helios_runs_with_different_shape(self):
         cfg = load_config(HELIOS)
+        # a Helios variant that auto-approves at config level (a legitimate
+        # config value) -- NOT a CLI override that downgrades a required gate
+        for s in cfg["steps"]:
+            if s["name"] == "create_note":
+                s["approval"] = "auto"
         tmp = tempfile.mkdtemp()
-        # override approval so the advancing candidate's note actually executes
-        runner, store, adapters = build(cfg, tmp, approval_override="auto")
+        runner, store, adapters = build(cfg, tmp)
         status = runner.run("run_h1")
         self.assertEqual(status, "completed")
         # cand_01 advances -> routed -> note created in the ATS (not review system)

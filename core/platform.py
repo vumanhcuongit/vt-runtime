@@ -8,11 +8,18 @@ exposed as one call a VT makes from its own code —
     platform.write(vt, workflow, run_id, item_id, operation, target, payload)
 
 It owns the boundary, not the workflow's logic. It derives the idempotency
-key (never generates it), enforces the approval gate, and writes exactly
-once via `none -> intent -> committed`, reconciling on `intent` after a
-crash instead of guessing. The step runner in this repo is a *harness*
-that calls this; a real VT would call it in place of its raw external
-call, its own logic unchanged.
+key (never generates it), enforces the approval gate, and makes a protected
+write with **double-run protection**: it records `intent` before the call
+and, on retry after a crash, **reconciles** (asks the target "did K
+happen?") rather than blindly redoing or skipping.
+
+The precise guarantee is at-least-once execution, made *effectively*-once
+by target-side lookup, and **single-writer only** — not distributed
+exactly-once. If the target cannot answer lookups by key, or two workers
+race the same key, the "effectively-once" property does not hold.
+
+The step runner in this repo is a *harness* that calls this; a real VT
+would call it in place of its raw external call, its own logic unchanged.
 """
 import os
 
@@ -45,8 +52,10 @@ class Platform:
 
     def write(self, *, vt, workflow, run_id, item_id, operation, target,
               payload=None, approval="auto", crash_at=None):
-        """Perform one protected external action exactly once across crashes
-        and retries. Raises RunStopped when it must halt for a human."""
+        """Perform one protected external action with double-run protection
+        across a crash + retry (write-intent, then reconcile-on-retry).
+        Effectively-once given a target that answers lookup-by-key;
+        single-writer only. Raises RunStopped when it must halt for a human."""
         if target not in self._adapters:
             raise RunStopped(f"no adapter registered for target '{target}' "
                              f"(operation '{operation}')")

@@ -45,8 +45,9 @@ demo-crash-b-down: preflight reset
 	$(PY) inspect
 
 demo-approval: preflight reset
-	@echo "--- approval required: external action waits, one config flag, no code ---"
-	$(PY) run --config $(MOZA) --run-id run_appr --approval required
+	@echo "--- the announced change request: force approval ON, no code change ---"
+	@echo "    (the action waits at 'pending'; granting it is a disclosed gap)"
+	$(PY) run --config $(MOZA) --run-id run_appr --require-approval
 	@echo
 	$(PY) inspect
 
@@ -65,8 +66,9 @@ demo-missing-id: preflight reset
 
 demo-helios: preflight reset
 	@echo "--- SAME runner, DIFFERENT VT: helios recruiting screening ---"
-	@echo "    (approval overridden to auto so the advancing candidate's note executes)"
-	$(PY) run --config $(HELIOS) --run-id run_helios --approval auto
+	@echo "    (config declares approval: required -- the advancing candidate's"
+	@echo "     note halts at 'pending'; this is the honest half-built approval gate)"
+	$(PY) run --config $(HELIOS) --run-id run_helios
 	@echo
 	$(PY) inspect
 

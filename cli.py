@@ -49,8 +49,11 @@ def cmd_run(args):
     store = Store(paths["runtime"])
     adapters = _build_adapters(paths, down=(args.external == "down"))
     model = _build_model(cfg, args.live)
+    # the CLI can only TIGHTEN the gate (force approval on), never loosen a
+    # config that declares `required` -- authorization is not operator-flippable
+    approval_override = "required" if args.require_approval else None
     runner = Runner(cfg, store, adapters, model,
-                    crash_at=args.crash_at, approval_override=args.approval)
+                    crash_at=args.crash_at, approval_override=approval_override)
     print(f"RUN {args.run_id}   workflow: {cfg['vt']}/{cfg['workflow']}")
     status = runner.run(args.run_id)
     store.close()
@@ -75,7 +78,9 @@ def build_parser():
     # refuses to invent identity (a generated default would duplicate on retry)
     r.add_argument("--run-id", required=True)
     r.add_argument("--crash-at", choices=["A", "B"], default=None)
-    r.add_argument("--approval", choices=["auto", "required"], default=None)
+    # tightening-only: forces the approval gate ON (the announced change
+    # request). There is deliberately no flag to turn a `required` gate off.
+    r.add_argument("--require-approval", action="store_true")
     r.add_argument("--external", choices=["up", "down"], default="up")
     r.add_argument("--state-dir", default="state")
     r.add_argument("--source", default=None, help="override the fetch source")

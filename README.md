@@ -1,9 +1,9 @@
 # VT Runtime
 
 One reusable platform capability: a **thin write-boundary** — `platform.write()`
-— that performs a VT's external actions **exactly once** across crashes and
-retries, behind a derived idempotency key, a decision ledger, and an approval
-gate.
+— that gives a VT's external actions **double-run protection** across a crash and
+retry (at-least-once, made effectively-once by target-side lookup; single-writer
+only), behind a derived idempotency key, a decision ledger, and an approval gate.
 
 ## 1. What this is (and what the runner is)
 
@@ -18,8 +18,8 @@ platform.write(vt, workflow, run_id, item_id, operation, target, payload)
 This is the piece the case study (Parts 1–3) argues to build *first*: the one
 thing every VT would otherwise re-implement and get wrong differently — a
 duplicated task, a duplicated ATS note — after a crash. Getting idempotent
-external actions right is hard exactly once; this boundary does it once, for all
-of them.
+external actions right is subtle, and worth solving once for all of them rather
+than five times.
 
 **The runner is a harness, not the capability.** To exercise the boundary
 end-to-end without a real VT, this repo includes a small config-driven step
@@ -101,13 +101,13 @@ the same "reusable capability" meaning without the collision.
 | Command | What it shows |
 |---|---|
 | `make demo` | Moza, start to finish: one task per `include`; `exclude`/`needs_review` create nothing; not-licensed skipped; stops cleanly at unknown rights. |
-| `make demo-crash-a` | Crash **after** `intent`, **before** the call — then retry. Task created exactly once ("created on retry"). |
+| `make demo-crash-a` | Crash **after** `intent`, **before** the call — then retry. The task is created once, on retry ("created on retry"). |
 | `make demo-crash-b` | Crash **after** the call, **before** commit — then retry. Task **not** created again ("already existed"). |
 | `make demo-crash-b-down` | Crash B, then retry with the external system **down**: record stays `intent`, run stops, prints a report for a human. |
 | `make demo-approval` | `--approval=required`: the external action waits for a person. One flag, no code change. |
 | `make demo-two-runs` | Two **different** runs, same songs → **two** tasks. Correct, not a bug. |
 | `make demo-missing-id` | An item missing its `song_id` → the run **stops at fetch**; never falls back to list position. |
-| `make demo-helios` | The **same runner** executes a different VT — different steps, identifier, target, approval — from config alone. |
+| `make demo-helios` | The **same runner** executes a different VT — different steps, identifier, target, approval — from config alone. Its `required` gate holds the note at `pending` (the honest half-built approval path). |
 | `make inspect` / `make reset` / `make test` | Dump all state / clear state / run the suite. |
 
 > The crash demos run against a single-include-song source so the crux — "one
@@ -138,7 +138,7 @@ nor "not done"; it means go and find out.**
         └── cannot answer ► leave as intent, STOP, print a report for a human
 ```
 
-**Approval is a separate axis, not a fourth state** (`core/actions.py`):
+**Approval is a separate axis, not a fourth state** (`core/platform.py`):
 
 ```
   approval_status:  pending → approved
@@ -164,7 +164,7 @@ with a readable reason (see §7), never a traceback that strands the run at
 Derived, never generated:
 
 ```
-  key = vt : workflow : run_id : step : item_id
+  key = vt : workflow : run_id : operation : item_id
   moza:song_screening:run_2026_03_14:create_task:song_042
 ```
 
@@ -181,10 +181,10 @@ cron/queue retry that forgot to pass a stable id would otherwise mint a new
 run each time and duplicate every action. Identity is the trigger's to supply,
 never the runner's to invent.
 
-The `step` segment extends the brief's `vt:workflow:run_id:item_id` formula by
-one part, so a workflow with **two external actions on the same item** (create a
-task *and* post a note) gets two distinct keys instead of the second silently
-reading the first's ledger row.
+The `operation` segment (the step's name, e.g. `create_task`) extends the brief's
+`vt:workflow:run_id:item_id` formula by one part, so a workflow with **two
+external actions on the same item** (create a task *and* post a note) gets two
+distinct keys instead of the second silently reading the first's ledger row.
 
 | Situation | Same key? | Correct outcome |
 |---|---|---|
@@ -222,7 +222,9 @@ reason, and leaves it `stopped` (never a silent crash that strands the run at
 **Helios runs on the same harness** (`make demo-helios`) through the same
 `platform.write()` boundary: a different step **order** (judge → route →
 create_note), a different identifier (`candidate_id`), a different external
-target (an ATS, `N-` notes), a different approval default — no `core/` change.
+target (an ATS, which mints `N-` notes when a write is approved), and a
+different approval default (`required`, so the demo's note halts at `pending`) —
+no `core/` change.
 
 But be precise about what that proves. Helios is Moza **reordered**: same shape
 (a flat list, one model decision, at most one external action per item). It
@@ -277,34 +279,57 @@ change.
 
 ## 10. Known limitations
 
-- **Single process.** This demonstrates safe *sequential* recovery. Two
-  concurrent workers could each `reconcile`, both get "no", and both create.
-  Fixing that needs a lock or native idempotency at the target — out of scope.
-- **Reconcile depends on lookup-by-key.** It only works if the target can answer
-  "did action K happen?". Production should prefer a target that accepts an
-  idempotency key **natively** so the *system* dedupes; lookup-and-reconcile is
-  the fallback.
-- **Halts don't yet resume-and-continue.** A run stops cleanly on unknown
-  rights, a bad model verdict, or an unreachable target — but the *exit* paths
-  are one-directional: fixing the cause and retrying the same run may skip the
-  halted item or re-stop, and a `pending` approval has no "approve then execute"
-  path (the gate blocks, but nothing opens it). Making these step states
-  non-terminal — re-attempt on retry, block completion while halted, add an
-  `approve` command — is the next iteration of the state machine.
-- **`--approval auto` is a demo-only override.** It lets `make demo-helios` show
-  a note actually created even though the config declares `required`. In
-  production, authorization must live in the platform, not a flag an operator can
-  flip.
-- **State is local SQLite** under `state/`.
-- **The external mock hides real semantics.** A local mock proves the recovery
+The uncomfortable ones — where a guarantee is weaker than it sounds — not "no UI".
+
+- **Run status is set by control flow, not derived from the ledger.** `run()`
+  marks a run `completed` after the item loop regardless of the ledger, so a run
+  can report `completed` while an action is still `pending` (approval) or
+  `intent` (orphaned). The ledger underneath is correct; the status above it can
+  lie.
+- **A halted run cannot be resumed.** A run stops cleanly on unknown rights, a
+  bad model verdict, or an unreachable target — but the exits are one-directional.
+  Retrying a run whose step recorded `error` treats it as done and **silently
+  skips that item**; a rights `unknown` re-stops permanently; the only way out is
+  a new `run_id`, which re-creates actions for items already processed.
+- **Approval blocks but cannot be granted.** An action reaches `pending` and
+  stops there — `set_approval` has no caller and there is no `approve` command,
+  so the "human says yes, now do it" half does not exist. (The CLI can only
+  *tighten* the gate via `--require-approval`; it cannot loosen a config that
+  declares `required`.)
+- **The mock target deduplicates natively on the key**, so `make demo` does not
+  actually exercise the reconcile fallback — the mock's own primary key would
+  prevent a duplicate even if the runner's reconcile logic were deleted. Only the
+  `PlainInsertAdapter` unit test drives reconcile against a non-idempotent target.
+  In production, prefer a target that accepts an idempotency key **natively** so
+  the system dedupes; lookup-and-reconcile is the fallback, and it trusts the
+  target's answer — a lagging lookup that says "no" would produce a duplicate
+  marked `committed`.
+- **No compare-and-swap on the `none → intent` transition.** Two workers both
+  read `none` and both execute. It holds today only because SQLite serializes
+  writers on one machine — an accident of the storage choice, not a designed
+  guarantee. At two processes, or 10× volume behind a queue, this breaks first.
+- **A duplicate trigger with a fresh `run_id` produces a duplicate action** — by
+  design, and the platform cannot tell it apart from two legitimate runs.
+  Identity must come from the trigger instance (which is why the platform refuses
+  to generate one); a caller that invents an id per attempt defeats the mechanism.
+- **Only `ExternalUnavailable` is caught.** Any other adapter exception — a
+  timeout, an HTTP error, a decode failure — escapes and strands the run at
+  `running` with a traceback as the only record. A later retry reconciles the
+  `intent`, so it is not a duplicate risk, but the status is wrong until then.
+- **The AI is never called at runtime.** Every run replays recorded verdicts; the
+  code that handles malformed output, timeouts, or 429s lives only in the offline
+  recorder. The runtime handles exactly one model failure mode — a verdict outside
+  the configured vocabulary.
+- **State is local SQLite** under `state/`; the external mock proves the recovery
   logic, not that a specific task tracker or ATS behaves this way.
 
 ## 11. Deliberate choices worth calling out
 
 - **JSON config, not YAML** — sanctioned by the build brief; keeps the runtime at
   **zero dependencies** so the clean-clone / no-key gate has nothing to install.
-- **`core/` instead of `platform/`** — avoids shadowing the stdlib `platform`
-  module (see §3).
+- **Top-level package is `core/`, not `platform/`** — a top-level `platform/` on
+  `sys.path` would shadow the stdlib `platform` module. The capability module is
+  `core/platform.py`, imported as `core.platform`, which is safe (see §3).
 - **`fetch` orders the unknown-rights song last** — one Moza fixture set then
   shows both "one task per include" and "unknown stops the run" in one demo.
 - **Crash demos use a single-include-song source** — so "one task, never two"
