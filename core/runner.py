@@ -48,13 +48,22 @@ class Runner:
         self.steps = config["steps"]
 
     def run(self, run_id: str) -> str:
+        # Identity comes from the trigger instance; the platform never
+        # generates it. A generated (e.g. timestamped) id would silently turn
+        # each unattended retry into a NEW run -- new key, duplicate action --
+        # which is the exact failure this whole design exists to prevent.
+        if not run_id:
+            raise ValueError(
+                "run_id is required: it must be the trigger-instance id; "
+                "the platform does not generate identity")
         existing = self.store.get_run(run_id)
         if existing and existing["status"] == "completed":
             self.print(f"RUN {run_id} already completed; nothing to do.")
             return "completed"
         self.store.create_run(run_id, self.vt, self.workflow)
 
-        fetch_step, item_steps = self.steps[0], self.steps[1:]
+        fetch_step = self._fetch_step()
+        item_steps = [s for s in self.steps if s is not fetch_step]
         try:
             self._validate_steps()
             items = self._fetch(run_id, fetch_step)
@@ -71,6 +80,15 @@ class Runner:
         self.store.set_run_status(run_id, "completed")
         self.print(f"RUN {run_id} completed.")
         return "completed"
+
+    def _fetch_step(self):
+        # The run-level step is the one declaring scope: "run" (honouring the
+        # config field rather than assuming steps[0]); fall back to the first
+        # step if none is declared.
+        for step in self.steps:
+            if step.get("scope") == "run":
+                return step
+        return self.steps[0]
 
     def _validate_steps(self):
         # An external action must carry an idempotency contract. A real

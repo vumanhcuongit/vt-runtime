@@ -7,17 +7,12 @@ and a workflow config, then runs or inspects.
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
 
 from core.runner import load_config, Runner
 from core.state import Store
 from core.observability import render
 from adapters.external import ReviewSystemAdapter, AtsAdapter
 from adapters.model import ReplayModel, LiveModel
-
-
-def _default_run_id():
-    return "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def _paths(state_dir):
@@ -56,9 +51,8 @@ def cmd_run(args):
     model = _build_model(cfg, args.live)
     runner = Runner(cfg, store, adapters, model,
                     crash_at=args.crash_at, approval_override=args.approval)
-    run_id = args.run_id or _default_run_id()
-    print(f"RUN {run_id}   workflow: {cfg['vt']}/{cfg['workflow']}")
-    status = runner.run(run_id)
+    print(f"RUN {args.run_id}   workflow: {cfg['vt']}/{cfg['workflow']}")
+    status = runner.run(args.run_id)
     store.close()
     return 0 if status in ("completed", "stopped") else 1
 
@@ -77,7 +71,9 @@ def build_parser():
 
     r = sub.add_parser("run", help="execute a workflow config")
     r.add_argument("--config", required=True)
-    r.add_argument("--run-id", default=None)
+    # required on purpose: the run_id is the trigger-instance id; the platform
+    # refuses to invent identity (a generated default would duplicate on retry)
+    r.add_argument("--run-id", required=True)
     r.add_argument("--crash-at", choices=["A", "B"], default=None)
     r.add_argument("--approval", choices=["auto", "required"], default=None)
     r.add_argument("--external", choices=["up", "down"], default="up")

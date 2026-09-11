@@ -154,6 +154,13 @@ found. Generate a fresh id per attempt instead and the key changes on retry, the
 record isn't found, and a duplicate is created — the whole mechanism does
 nothing.
 
+For that reason the platform treats the `run_id` as the **trigger-instance id
+and refuses to generate one**: `run` requires an explicit `--run-id`, and
+`Runner.run` rejects an empty one. This matters most for the unattended case — a
+cron/queue retry that forgot to pass a stable id would otherwise mint a new
+run each time and duplicate every action. Identity is the trigger's to supply,
+never the runner's to invent.
+
 The `step` segment extends the brief's `vt:workflow:run_id:item_id` formula by
 one part, so a workflow with **two external actions on the same item** (create a
 task *and* post a note) gets two distinct keys instead of the second silently

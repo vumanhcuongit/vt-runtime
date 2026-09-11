@@ -77,6 +77,15 @@ class TestDerivedKey(unittest.TestCase):
         notify = derive_key("v", "w", "run_1", "notify", "item_1")
         self.assertNotEqual(create, notify)
 
+    def test_run_id_is_required_not_generated(self):
+        # the platform must refuse to invent identity: a generated run_id would
+        # make each unattended retry a new run and duplicate the action
+        cfg = load_config(MOZA)
+        tmp = tempfile.mkdtemp()
+        runner, store, adapters = build(cfg, tmp)
+        with self.assertRaises(ValueError):
+            runner.run("")
+
 
 class TestNoDuplicateAcrossRepeats(unittest.TestCase):
     def test_same_run_three_times_is_one_task_each(self):
