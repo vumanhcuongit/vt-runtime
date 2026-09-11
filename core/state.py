@@ -93,6 +93,20 @@ class Store:
         )
         self.conn.commit()
 
+    def upsert_step(self, run_id, step_name, item_id, result, detail):
+        # Like record_step, but the LATEST write wins. Used for external
+        # steps, whose row transitions (intent -> reconciled -> committed):
+        # first-write-wins would leave the audit trail showing a stale state
+        # that contradicts the ledger after a recovery.
+        self.conn.execute(
+            "INSERT INTO steps(run_id, step_name, item_id, result, detail, created_at)"
+            " VALUES(?,?,?,?,?,?)"
+            " ON CONFLICT(run_id, step_name, item_id) DO UPDATE SET"
+            " result=excluded.result, detail=excluded.detail",
+            (run_id, step_name, item_id, result, detail, _now()),
+        )
+        self.conn.commit()
+
     def get_step(self, run_id, step_name, item_id):
         row = self.conn.execute(
             "SELECT * FROM steps WHERE run_id=? AND step_name=? AND item_id IS ?",

@@ -133,17 +133,19 @@ new code.
 **The runner enforces the idempotency contract**: an external step that doesn't
 declare `idempotent: true` is refused before it can act — the platform doesn't
 take the config's word for it. Everything the runner can't safely resolve —
-unknown rights, a reconcile that can't answer, a missing identifier, a model
-verdict outside the configured `outcomes` — routes through the *same* controlled
-`stopped` state with a readable reason (see §7), never a silent crash.
+unknown rights, a reconcile that can't answer, an **external system that's
+unreachable on a first attempt**, a missing identifier, a model verdict outside
+the configured `outcomes` — routes through the *same* controlled `stopped` state
+with a readable reason (see §7), never a traceback that strands the run at
+`running`.
 
 ## 6. The idempotency key
 
 Derived, never generated:
 
 ```
-  key = vt : workflow : run_id : item_id
-  moza:song_screening:run_2026_03_14:song_042
+  key = vt : workflow : run_id : step : item_id
+  moza:song_screening:run_2026_03_14:create_task:song_042
 ```
 
 `run_id` identifies the **run**, not the attempt, and every retry of a run
@@ -151,6 +153,11 @@ reuses it — so the key is identical across retries and the existing record is
 found. Generate a fresh id per attempt instead and the key changes on retry, the
 record isn't found, and a duplicate is created — the whole mechanism does
 nothing.
+
+The `step` segment extends the brief's `vt:workflow:run_id:item_id` formula by
+one part, so a workflow with **two external actions on the same item** (create a
+task *and* post a note) gets two distinct keys instead of the second silently
+reading the first's ledger row.
 
 | Situation | Same key? | Correct outcome |
 |---|---|---|
@@ -243,6 +250,17 @@ change.
   "did action K happen?". Production should prefer a target that accepts an
   idempotency key **natively** so the *system* dedupes; lookup-and-reconcile is
   the fallback.
+- **Halts don't yet resume-and-continue.** A run stops cleanly on unknown
+  rights, a bad model verdict, or an unreachable target — but the *exit* paths
+  are one-directional: fixing the cause and retrying the same run may skip the
+  halted item or re-stop, and a `pending` approval has no "approve then execute"
+  path (the gate blocks, but nothing opens it). Making these step states
+  non-terminal — re-attempt on retry, block completion while halted, add an
+  `approve` command — is the next iteration of the state machine.
+- **`--approval auto` is a demo-only override.** It lets `make demo-helios` show
+  a note actually created even though the config declares `required`. In
+  production, authorization must live in the platform, not a flag an operator can
+  flip.
 - **State is local SQLite** under `state/`.
 - **The external mock hides real semantics.** A local mock proves the recovery
   logic, not that a specific task tracker or ATS behaves this way.

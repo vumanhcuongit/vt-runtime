@@ -112,7 +112,7 @@ class Runner:
             return self._model(run_id, step, item, item_id)
         if t == "external":
             adapter = self._adapter_for(step)
-            key = derive_key(self.vt, self.workflow, run_id, item_id)
+            key = derive_key(self.vt, self.workflow, run_id, step["name"], item_id)
             perform_external(self.store, adapter, run_id, item_id, key, step,
                              approval_override=self.approval_override,
                              crash_at=self.crash_at, printer=self.print)

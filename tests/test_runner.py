@@ -94,11 +94,12 @@ class TestHeliosOnSameRunner(unittest.TestCase):
         self.assertEqual(status, "completed")
         # cand_01 advances -> routed -> note created in the ATS (not review system)
         self.assertEqual(store.get_step("run_h1", "route", "cand_01")["result"], "ok")
-        note = adapters["ats"].find_by_key("helios:recruiting_screening:run_h1:cand_01")
+        note = adapters["ats"].find_by_key(
+            "helios:recruiting_screening:run_h1:create_note:cand_01")
         self.assertTrue(note.startswith("N-"))
         # cand_02 reject, cand_03 needs_review -> no note
-        self.assertIsNone(
-            adapters["ats"].find_by_key("helios:recruiting_screening:run_h1:cand_02"))
+        self.assertIsNone(adapters["ats"].find_by_key(
+            "helios:recruiting_screening:run_h1:create_note:cand_02"))
         # review_system adapter was never touched by Helios
         self.assertEqual(
             adapters["review_system"].conn.execute(

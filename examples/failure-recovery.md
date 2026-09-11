@@ -52,12 +52,12 @@ from crash-B (call happened). So the retry does not guess.
         │
         ▼
   ask review system: does an action with key
-  "moza:song_screening:run_crash_b:song_041" exist?
+  "moza:song_screening:run_crash_b:create_task:song_041" exist?
         │
         └── yes, T-991 ──► mark committed, do NOT create again
 ```
 
-Because the idempotency key is **derived** (`vt:workflow:run_id:item_id`)
+Because the idempotency key is **derived** (`vt:workflow:run_id:step:item_id`)
 and the retry reuses the same `run_id`, the key is identical to the one the
 first attempt used — so reconcile finds the existing task instead of making
 a second.
@@ -78,7 +78,7 @@ and did not blindly redo — it asked, then recorded the truth.
 ```
 EXTERNAL ACTIONS
   key                                                  state       result
-  moza:song_screening:run_crash_b:song_041             committed   T-991
+  moza:song_screening:run_crash_b:create_task:song_041   committed   T-991
 ```
 
 One row. One task (`T-991`). Run `make demo-crash-b` three times: still one
