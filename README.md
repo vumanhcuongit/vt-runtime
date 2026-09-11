@@ -279,49 +279,17 @@ change.
 
 ## 10. Known limitations
 
-The uncomfortable ones — where a guarantee is weaker than it sounds — not "no UI".
-
-- **Run status is set by control flow, not derived from the ledger.** `run()`
-  marks a run `completed` after the item loop regardless of the ledger, so a run
-  can report `completed` while an action is still `pending` (approval) or
-  `intent` (orphaned). The ledger underneath is correct; the status above it can
-  lie.
-- **A halted run cannot be resumed.** A run stops cleanly on unknown rights, a
-  bad model verdict, or an unreachable target — but the exits are one-directional.
-  Retrying a run whose step recorded `error` treats it as done and **silently
-  skips that item**; a rights `unknown` re-stops permanently; the only way out is
-  a new `run_id`, which re-creates actions for items already processed.
-- **Approval blocks but cannot be granted.** An action reaches `pending` and
-  stops there — `set_approval` has no caller and there is no `approve` command,
-  so the "human says yes, now do it" half does not exist. (The CLI can only
-  *tighten* the gate via `--require-approval`; it cannot loosen a config that
-  declares `required`.)
-- **The mock target deduplicates natively on the key**, so `make demo` does not
-  actually exercise the reconcile fallback — the mock's own primary key would
-  prevent a duplicate even if the runner's reconcile logic were deleted. Only the
-  `PlainInsertAdapter` unit test drives reconcile against a non-idempotent target.
-  In production, prefer a target that accepts an idempotency key **natively** so
-  the system dedupes; lookup-and-reconcile is the fallback, and it trusts the
-  target's answer — a lagging lookup that says "no" would produce a duplicate
-  marked `committed`.
-- **No compare-and-swap on the `none → intent` transition.** Two workers both
-  read `none` and both execute. It holds today only because SQLite serializes
-  writers on one machine — an accident of the storage choice, not a designed
-  guarantee. At two processes, or 10× volume behind a queue, this breaks first.
-- **A duplicate trigger with a fresh `run_id` produces a duplicate action** — by
-  design, and the platform cannot tell it apart from two legitimate runs.
-  Identity must come from the trigger instance (which is why the platform refuses
-  to generate one); a caller that invents an id per attempt defeats the mechanism.
-- **Only `ExternalUnavailable` is caught.** Any other adapter exception — a
-  timeout, an HTTP error, a decode failure — escapes and strands the run at
-  `running` with a traceback as the only record. A later retry reconciles the
-  `intent`, so it is not a duplicate risk, but the status is wrong until then.
-- **The AI is never called at runtime.** Every run replays recorded verdicts; the
-  code that handles malformed output, timeouts, or 429s lives only in the offline
-  recorder. The runtime handles exactly one model failure mode — a verdict outside
-  the configured vocabulary.
-- **State is local SQLite** under `state/`; the external mock proves the recovery
-  logic, not that a specific task tracker or ATS behaves this way.
+The full write-up — each with severity and the fix — is in the **Known
+Limitations** document submitted with this repo. In brief, the load-bearing ones:
+run status is set by control flow, not derived from the ledger (a run can read
+`completed` with an action still `pending`/`intent`); a halted run has no resume
+path (an errored item is silently skipped on retry, a rights `unknown` re-stops);
+approval blocks but cannot be granted; the mock target dedupes natively, so only
+the `PlainInsertAdapter` test exercises the reconcile fallback; there is no
+compare-and-swap on `none → intent` (unsafe with two workers); and only
+`ExternalUnavailable` is caught (other adapter errors strand the run at
+`running`). The guarantee is single-writer, effectively-once-via-lookup — not
+distributed exactly-once.
 
 ## 11. Deliberate choices worth calling out
 
